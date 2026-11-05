@@ -26,8 +26,21 @@ public:
     static constexpr char MimeType[] = "x-scheme-handler/ms-appx-web";
     static constexpr char DesktopFileName[] = "org.kde.krdc.avd-signin-handler.desktop";
 
-    /** @p handlerPath is the helper to register; see defaultHandlerPath(). */
-    explicit HandlerRegistration(const QString &handlerPath = defaultHandlerPath());
+    /**
+     * @p handlerPath is the helper to register; see defaultHandlerPath().
+     * @p packagedDesktopFile names the desktop file a package (the Flatpak)
+     * installs for the helper; KRDC then neither checks nor writes any
+     * registration, as only the desktop outside the sandbox decides which
+     * application opens the links. Empty for native builds; see
+     * packagedDesktopFileName().
+     */
+    explicit HandlerRegistration(const QString &handlerPath = defaultHandlerPath(), const QString &packagedDesktopFile = packagedDesktopFileName());
+
+    /**
+     * The desktop file the package installs for the helper (set at build time), when running inside
+     * that package's Flatpak sandbox; otherwise, and always for native builds, an empty string.
+     */
+    static QString packagedDesktopFileName();
 
     /**
      * The helper next to the running executable, as in a build tree, or else
@@ -70,6 +83,7 @@ private:
 
     QString m_handlerPath;
     QString m_problem;
+    QString m_packagedDesktopFile;
 };
 
 namespace detail

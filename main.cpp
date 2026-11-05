@@ -53,6 +53,8 @@ int main(int argc, char **argv)
                         QStringLiteral("http://libvncserver.sourceforge.net/"));
     aboutData.setOrganizationDomain("kde.org");
 
+    // org.kde.krdc unless a package of this fork sets its own ID; it must match the installed desktop file.
+    aboutData.setDesktopFileName(QStringLiteral(KRDC_APP_ID));
     KAboutData::setApplicationData(aboutData);
     app.setWindowIcon(QIcon::fromTheme(appName));
 

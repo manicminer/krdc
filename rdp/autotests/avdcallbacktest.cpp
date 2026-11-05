@@ -121,6 +121,7 @@ private Q_SLOTS:
     void stateForRouting();
     void directoryIsOwnerOnly();
     void refusesInsecureDirectories();
+    void flatpakRuntimeBase();
     void handlerDeliversToLiveSignIn();
     void handlerDoesNotReachOtherSignIns();
     void malformedLinkKeepsSignIn();
@@ -289,6 +290,22 @@ void AvdCallbackTest::directoryIsOwnerOnly()
     QVERIFY(dir.startsWith(qEnvironmentVariable("XDG_RUNTIME_DIR") + QLatin1Char('/')));
     const QFile::Permissions others = QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther;
     QCOMPARE(QFile::permissions(dir) & (ownerOnly() | others), ownerOnly());
+}
+
+void AvdCallbackTest::flatpakRuntimeBase()
+{
+    // Outside Flatpak, as here, the session's runtime directory itself, unchanged.
+    QCOMPARE(CallbackChannel::flatpakAppId(), QString());
+    QCOMPARE(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QString()), QStringLiteral("/run/user/1000"));
+    // Inside, the directory all sandboxes of the same application share.
+    QCOMPARE(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000/"), QStringLiteral("io.github.manicminer.krdc")),
+             QStringLiteral("/run/user/1000/app/io.github.manicminer.krdc"));
+    // An ID from the environment never chooses another path.
+    for (const char *id : {"..", "a/b.c.d", "io.github..krdc", "io.github", "io.github.manicminer.krdc/..", "io.1github.x", "io.github.x y", ".io.github.x"}) {
+        QVERIFY2(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QString::fromLatin1(id)).isEmpty(), id);
+    }
+    QVERIFY(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QStringLiteral("a.b.") + QString(252, QLatin1Char('c'))).isEmpty());
+    QVERIFY(!CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QStringLiteral("a.b.") + QString(251, QLatin1Char('c'))).isEmpty());
 }
 
 void AvdCallbackTest::refusesInsecureDirectories()

@@ -56,6 +56,20 @@ enum class DirectoryError {
     PathTooLong,
 };
 
+/**
+ * The directory the channel directory is created in: @p runtimeDirectory, or,
+ * inside a Flatpak sandbox (@p flatpakAppId not empty), its app/<id>
+ * subdirectory. Flatpak gives each sandbox a private XDG_RUNTIME_DIR, so the
+ * helper the desktop starts in a new sandbox of the same application could not
+ * reach a socket there; app/<id> is the one runtime directory all sandboxes of
+ * that application share with each other (and the user's host session). An
+ * empty string if @p flatpakAppId is not a valid application ID.
+ */
+QString runtimeBase(const QString &runtimeDirectory, const QString &flatpakAppId);
+
+/** The Flatpak application ID KRDC runs as, or an empty string outside a Flatpak sandbox. */
+QString flatpakAppId();
+
 /** The channel directory, after checking its owner and permissions; created if @p create. */
 QString directory(bool create, DirectoryError *error);
 

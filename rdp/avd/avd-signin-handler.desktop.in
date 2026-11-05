@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 KRDC contributors
+# SPDX-License-Identifier: CC0-1.0
+#
+# Only installed by packages built with KRDC_AVD_PACKAGED_HANDLER (the Flatpak), which register the
+# helper for ms-appx-web: links at install time; see doc/azure-virtual-desktop.md.
+[Desktop Entry]
+Type=Application
+Name=KRDC Azure Virtual Desktop sign-in
+Comment=Hands Microsoft Entra sign-ins from the browser back to KRDC
+Icon=@KRDC_APP_ID@
+Exec=krdc-avd-signin-handler %u
+MimeType=x-scheme-handler/ms-appx-web;
+NoDisplay=true
+Terminal=false

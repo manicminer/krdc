@@ -1,0 +1,391 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f90fbc18..2df3fc0f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -94,6 +94,15 @@ endif(WIN32)
+ 
+ option(WITH_VNC "Enable VNC support." ON)
+ add_feature_info(VNC WITH_VNC "Building with support for the VNC protocol. Disable with -DWITH_VNC=NO")
++# The application (desktop file, Wayland app_id) ID. Packages of forks set their own, e.g. the Flatpak.
++set(KRDC_APP_ID "org.kde.krdc" CACHE STRING "Application ID KRDC identifies itself with")
++if(NOT KRDC_APP_ID MATCHES "^[A-Za-z_][A-Za-z0-9_-]*(\\.[A-Za-z_][A-Za-z0-9_-]*)+$")
++    message(FATAL_ERROR "KRDC_APP_ID is not a valid application ID: ${KRDC_APP_ID}")
++endif()
++# Packages that register the AVD sign-in helper for ms-appx-web: links themselves (the Flatpak exports
++# its desktop file). KRDC then writes no registration of its own. Off for native builds.
++option(KRDC_AVD_PACKAGED_HANDLER "Install a desktop file registering the AVD sign-in helper (for sandboxed packages)" OFF)
++
+ option(WITH_RDP "Enable RDP support using FreeRDP" ON)
+ add_feature_info(RDP WITH_RDP "Building with support for the RDP protocol. Disable with -DWITH_RDP=NO")
+ option(WITH_SPICE "Enable SPICE support." ON)
+@@ -277,6 +286,7 @@ target_include_directories(krdc_objects PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMA
+ 
+ add_executable(krdc main.cpp)
+ target_link_libraries(krdc krdc_objects)
++target_compile_definitions(krdc PRIVATE KRDC_APP_ID="${KRDC_APP_ID}")
+ # Building krdc alone, as IDE run targets do, must also build the plugins it loads.
+ get_property(krdc_plugins GLOBAL PROPERTY KRDC_PLUGINS)
+ if(krdc_plugins)
+diff --git a/cmake/modules/KrdcTestEnvironment.cmake b/cmake/modules/KrdcTestEnvironment.cmake
+index 2b7e59b6..0717f5ed 100644
+--- a/cmake/modules/KrdcTestEnvironment.cmake
++++ b/cmake/modules/KrdcTestEnvironment.cmake
+@@ -11,7 +11,7 @@ function(krdc_isolate_tests)
+         string(SUBSTRING "${runtime_id}" 0 8 runtime_id)
+         set(runtime "${CMAKE_BINARY_DIR}/rt/${runtime_id}")
+         set_tests_properties(${test} PROPERTIES
+-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${home};XDG_CONFIG_HOME=${home}/config;XDG_DATA_HOME=${home}/data;XDG_CACHE_HOME=${home}/cache;XDG_STATE_HOME=${home}/state;XDG_RUNTIME_DIR=${runtime};DBUS_SESSION_BUS_ADDRESS=disabled:;QT_LOGGING_RULES=*.debug=false;BROWSER=/bin/false"
++            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${home};XDG_CONFIG_HOME=${home}/config;XDG_DATA_HOME=${home}/data;XDG_CACHE_HOME=${home}/cache;XDG_STATE_HOME=${home}/state;XDG_RUNTIME_DIR=${runtime};DBUS_SESSION_BUS_ADDRESS=disabled:;QT_LOGGING_RULES=*.debug=false;BROWSER=/bin/false;FLATPAK_ID="
+         )
+         file(MAKE_DIRECTORY "${home}/config" "${home}/data" "${home}/cache" "${home}/state" "${runtime}")
+         file(CHMOD "${CMAKE_BINARY_DIR}/rt" "${runtime}" DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+diff --git a/main.cpp b/main.cpp
+index 87d1f8d5..a148da0d 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -53,6 +53,8 @@ int main(int argc, char **argv)
+                         QStringLiteral("http://libvncserver.sourceforge.net/"));
+     aboutData.setOrganizationDomain("kde.org");
+ 
++    // org.kde.krdc unless a package of this fork sets its own ID; it must match the installed desktop file.
++    aboutData.setDesktopFileName(QStringLiteral(KRDC_APP_ID));
+     KAboutData::setApplicationData(aboutData);
+     app.setWindowIcon(QIcon::fromTheme(appName));
+ 
+diff --git a/rdp/CMakeLists.txt b/rdp/CMakeLists.txt
+index d45cc790..47a6c275 100644
+--- a/rdp/CMakeLists.txt
++++ b/rdp/CMakeLists.txt
+@@ -8,6 +8,15 @@ target_link_libraries(krdc_avdchannel PUBLIC Qt::Core)
+ add_executable(krdc-avd-signin-handler avd/avdsigninhandler.cpp)
+ target_link_libraries(krdc-avd-signin-handler krdc_avdchannel Qt::Network)
+ install(TARGETS krdc-avd-signin-handler DESTINATION ${KDE_INSTALL_LIBEXECDIR})
++if(KRDC_AVD_PACKAGED_HANDLER)
++    # Named after the application ID, as Flatpak only exports such desktop files. The command is
++    # looked up in the package's PATH (Flatpak runs it in a new sandbox of the same application).
++    set(KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE "${KRDC_APP_ID}.avd-signin-handler.desktop")
++    configure_file(avd/avd-signin-handler.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE} @ONLY)
++    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE} DESTINATION ${KDE_INSTALL_APPDIR})
++    configure_file(avd/krdc-avd-signin-handler-launcher.in ${CMAKE_CURRENT_BINARY_DIR}/krdc-avd-signin-handler-launcher @ONLY)
++    install(PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/krdc-avd-signin-handler-launcher DESTINATION ${KDE_INSTALL_BINDIR} RENAME krdc-avd-signin-handler)
++endif()
+ 
+ # Code without widgets, shared by the plugin and its tests.
+ add_library(krdc_rdpcore STATIC)
+@@ -36,6 +45,9 @@ ecm_qt_declare_logging_category(krdc_rdpcore
+ 
+ target_compile_definitions(krdc_rdpcore PRIVATE TRANSLATION_DOMAIN=\"krdc\"
+     KRDC_AVD_HANDLER_INSTALL_PATH=\"${KDE_INSTALL_FULL_LIBEXECDIR}/krdc-avd-signin-handler\")
++if(KRDC_AVD_PACKAGED_HANDLER)
++    target_compile_definitions(krdc_rdpcore PRIVATE KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE=\"${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE}\")
++endif()
+ target_include_directories(krdc_rdpcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FreeRDP_INCLUDE_DIR} ${WinPR_INCLUDE_DIR})
+ 
+ target_link_libraries(krdc_rdpcore
+diff --git a/rdp/autotests/avdcallbacktest.cpp b/rdp/autotests/avdcallbacktest.cpp
+index fafd236d..c285f451 100644
+--- a/rdp/autotests/avdcallbacktest.cpp
++++ b/rdp/autotests/avdcallbacktest.cpp
+@@ -121,6 +121,7 @@ private Q_SLOTS:
+     void stateForRouting();
+     void directoryIsOwnerOnly();
+     void refusesInsecureDirectories();
++    void flatpakRuntimeBase();
+     void handlerDeliversToLiveSignIn();
+     void handlerDoesNotReachOtherSignIns();
+     void malformedLinkKeepsSignIn();
+@@ -291,6 +292,22 @@ void AvdCallbackTest::directoryIsOwnerOnly()
+     QCOMPARE(QFile::permissions(dir) & (ownerOnly() | others), ownerOnly());
+ }
+ 
++void AvdCallbackTest::flatpakRuntimeBase()
++{
++    // Outside Flatpak, as here, the session's runtime directory itself, unchanged.
++    QCOMPARE(CallbackChannel::flatpakAppId(), QString());
++    QCOMPARE(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QString()), QStringLiteral("/run/user/1000"));
++    // Inside, the directory all sandboxes of the same application share.
++    QCOMPARE(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000/"), QStringLiteral("io.github.manicminer.krdc")),
++             QStringLiteral("/run/user/1000/app/io.github.manicminer.krdc"));
++    // An ID from the environment never chooses another path.
++    for (const char *id : {"..", "a/b.c.d", "io.github..krdc", "io.github", "io.github.manicminer.krdc/..", "io.1github.x", "io.github.x y", ".io.github.x"}) {
++        QVERIFY2(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QString::fromLatin1(id)).isEmpty(), id);
++    }
++    QVERIFY(CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QStringLiteral("a.b.") + QString(252, QLatin1Char('c'))).isEmpty());
++    QVERIFY(!CallbackChannel::runtimeBase(QStringLiteral("/run/user/1000"), QStringLiteral("a.b.") + QString(251, QLatin1Char('c'))).isEmpty());
++}
++
+ void AvdCallbackTest::refusesInsecureDirectories()
+ {
+     // A private directory of its own rather than one under the test's XDG_RUNTIME_DIR: that one lies in the
+diff --git a/rdp/autotests/avdhandlerregistrationtest.cpp b/rdp/autotests/avdhandlerregistrationtest.cpp
+index 0011ae25..a81afa2f 100644
+--- a/rdp/autotests/avdhandlerregistrationtest.cpp
++++ b/rdp/autotests/avdhandlerregistrationtest.cpp
+@@ -149,6 +149,7 @@ private Q_SLOTS:
+     void init();
+     void defaultHandlerIsBuilt();
+     void nothingRegisteredImplicitly();
++    void packagedHelperWritesNothing();
+     void registersOnRequest();
+     void reportsOtherHandler();
+     void reportsOtherKrdcHandler();
+@@ -201,6 +202,30 @@ void AvdHandlerRegistrationTest::nothingRegisteredImplicitly()
+     QVERIFY(mimeappsDefault().isEmpty());
+ }
+ 
++void AvdHandlerRegistrationTest::packagedHelperWritesNothing()
++{
++    // Native builds name no packaged desktop file; their registration is unchanged.
++    QVERIFY(HandlerRegistration::packagedDesktopFileName().isEmpty());
++
++    // A package (the Flatpak) exports the helper's desktop file itself: KRDC reports it as set up,
++    // offers nothing to set up and writes nothing, even with another handler configured in its view.
++    writeDesktopFile(QStringLiteral("test.OtherBroker.desktop"),
++                     "[Desktop Entry]\nType=Application\nName=Other Broker\nExec=/usr/bin/false %u\nMimeType=x-scheme-handler/ms-appx-web;\nNoDisplay=true\n");
++    makeDefault(QStringLiteral("test.OtherBroker.desktop"));
++    const QByteArray mimeappsBefore = readBytes(mimeappsPath());
++    const QString packaged = QStringLiteral("io.github.example.App.avd-signin-handler.desktop");
++    HandlerRegistration registration(QStringLiteral("/nonexistent/krdc-avd-signin-handler"), packaged);
++    const auto status = registration.status();
++    QCOMPARE(status.state, HandlerRegistration::State::Registered);
++    QCOMPARE(status.currentDesktopFile, packaged);
++    QString error;
++    QVERIFY(!registration.registerHandler(&error));
++    QVERIFY(error.contains(packaged));
++    QCOMPARE(readBytes(mimeappsPath()), mimeappsBefore);
++    QVERIFY(!QFile::exists(applicationsDir() + QLatin1Char('/') + QLatin1String(HandlerRegistration::DesktopFileName)));
++    QVERIFY(!QFile::exists(applicationsDir() + QLatin1Char('/') + packaged));
++}
++
+ void AvdHandlerRegistrationTest::registersOnRequest()
+ {
+     HandlerRegistration registration(QStringLiteral(KRDC_AVD_HANDLER_PATH));
+diff --git a/rdp/avd/avdcallbackchannel.cpp b/rdp/avd/avdcallbackchannel.cpp
+index 1a4b6904..1a26e338 100644
+--- a/rdp/avd/avdcallbackchannel.cpp
++++ b/rdp/avd/avdcallbackchannel.cpp
+@@ -9,6 +9,7 @@
+ #include <QCryptographicHash>
+ #include <QDir>
+ #include <QFile>
++#include <QStringList>
+ 
+ #include <algorithm>
+ #include <cerrno>
+@@ -87,6 +88,35 @@ QString socketName(const QString &state)
+     return QString::fromLatin1(hash.left(SocketNameLength));
+ }
+ 
++QString runtimeBase(const QString &runtimeDirectory, const QString &flatpakAppId)
++{
++    if (flatpakAppId.isEmpty()) {
++        return runtimeDirectory;
++    }
++    // Application IDs as Flatpak accepts them: at least three elements, none empty or starting with a
++    // digit, only ASCII letters, digits, '_' and '-', at most 255 characters. Nothing else can choose a path.
++    const QStringList elements = flatpakAppId.split(QLatin1Char('.'));
++    const auto validElement = [](const QString &element) {
++        return !element.isEmpty() && !element.front().isDigit() && std::all_of(element.cbegin(), element.cend(), [](QChar c) {
++            return (c >= QLatin1Char('a') && c <= QLatin1Char('z')) || (c >= QLatin1Char('A') && c <= QLatin1Char('Z'))
++                || (c >= QLatin1Char('0') && c <= QLatin1Char('9')) || c == QLatin1Char('_') || c == QLatin1Char('-');
++        });
++    };
++    if (flatpakAppId.size() > 255 || elements.size() < 3 || !std::all_of(elements.cbegin(), elements.cend(), validElement)) {
++        return {};
++    }
++    return QDir::cleanPath(runtimeDirectory) + QStringLiteral("/app/") + flatpakAppId;
++}
++
++QString flatpakAppId()
++{
++    // Flatpak creates /.flatpak-info in every sandbox and sets FLATPAK_ID; the variable alone is not trusted.
++    if (!QFile::exists(QStringLiteral("/.flatpak-info"))) {
++        return {};
++    }
++    return qEnvironmentVariable("FLATPAK_ID");
++}
++
+ QString directory(bool create, DirectoryError *error)
+ {
+     const auto fail = [error](DirectoryError reason) {
+@@ -103,7 +133,12 @@ QString directory(bool create, DirectoryError *error)
+     if (!isPrivateDirectory(QFile::encodeName(runtime))) {
+         return fail(DirectoryError::Insecure);
+     }
+-    const QString path = QDir::cleanPath(runtime) + QLatin1Char('/') + QLatin1String(DirectoryName);
++    const QString base = runtimeBase(runtime, flatpakAppId());
++    // Flatpak creates app/<id> owner-only; it must be, as XDG_RUNTIME_DIR itself.
++    if (base.isEmpty() || !isPrivateDirectory(QFile::encodeName(base))) {
++        return fail(DirectoryError::Insecure);
++    }
++    const QString path = QDir::cleanPath(base) + QLatin1Char('/') + QLatin1String(DirectoryName);
+     const QByteArray encoded = QFile::encodeName(path);
+     if (encoded.size() + 1 + SocketNameLength >= qsizetype(sizeof(sockaddr_un::sun_path))) {
+         return fail(DirectoryError::PathTooLong);
+diff --git a/rdp/avd/avdcallbackchannel.h b/rdp/avd/avdcallbackchannel.h
+index df67f874..70ef4d27 100644
+--- a/rdp/avd/avdcallbackchannel.h
++++ b/rdp/avd/avdcallbackchannel.h
+@@ -56,6 +56,20 @@ enum class DirectoryError {
+     PathTooLong,
+ };
+ 
++/**
++ * The directory the channel directory is created in: @p runtimeDirectory, or,
++ * inside a Flatpak sandbox (@p flatpakAppId not empty), its app/<id>
++ * subdirectory. Flatpak gives each sandbox a private XDG_RUNTIME_DIR, so the
++ * helper the desktop starts in a new sandbox of the same application could not
++ * reach a socket there; app/<id> is the one runtime directory all sandboxes of
++ * that application share with each other (and the user's host session). An
++ * empty string if @p flatpakAppId is not a valid application ID.
++ */
++QString runtimeBase(const QString &runtimeDirectory, const QString &flatpakAppId);
++
++/** The Flatpak application ID KRDC runs as, or an empty string outside a Flatpak sandbox. */
++QString flatpakAppId();
++
+ /** The channel directory, after checking its owner and permissions; created if @p create. */
+ QString directory(bool create, DirectoryError *error);
+ 
+diff --git a/rdp/avd/avdhandlerregistration.cpp b/rdp/avd/avdhandlerregistration.cpp
+index eef926a4..55cd986f 100644
+--- a/rdp/avd/avdhandlerregistration.cpp
++++ b/rdp/avd/avdhandlerregistration.cpp
+@@ -5,6 +5,7 @@
+ */
+ 
+ #include "avd/avdhandlerregistration.h"
++#include "avd/avdcallbackchannel.h"
+ 
+ #include <KApplicationTrader>
+ #include <KLocalizedString>
+@@ -140,8 +141,14 @@ bool restoreFile(const QString &path, const FileSnapshot &snapshot)
+ }
+ }
+ 
+-HandlerRegistration::HandlerRegistration(const QString &handlerPath)
++HandlerRegistration::HandlerRegistration(const QString &handlerPath, const QString &packagedDesktopFile)
++    : m_packagedDesktopFile(packagedDesktopFile)
+ {
++    if (!m_packagedDesktopFile.isEmpty()) {
++        // The package registers the helper; its path inside the sandbox means nothing to the desktop.
++        m_handlerPath = handlerPath;
++        return;
++    }
+     const QFileInfo info(handlerPath);
+     const QString canonical = handlerPath.isEmpty() ? QString() : info.canonicalFilePath();
+     if (canonical.isEmpty()) {
+@@ -160,6 +167,19 @@ HandlerRegistration::HandlerRegistration(const QString &handlerPath)
+     }
+ }
+ 
++QString HandlerRegistration::packagedDesktopFileName()
++{
++#ifdef KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE
++    // Only inside the package's sandbox: the same build run elsewhere (its tests) behaves natively.
++    if (!CallbackChannel::flatpakAppId().isEmpty()) {
++        return QStringLiteral(KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE);
++    }
++    return {};
++#else
++    return {};
++#endif
++}
++
+ QString HandlerRegistration::defaultHandlerPath()
+ {
+     // A build tree keeps its helper next to krdc; an installed KRDC in libexec.
+@@ -186,6 +206,12 @@ QString HandlerRegistration::command() const
+ 
+ HandlerRegistration::Status HandlerRegistration::status() const
+ {
++    if (!m_packagedDesktopFile.isEmpty()) {
++        Status packaged;
++        packaged.state = State::Registered;
++        packaged.currentDesktopFile = m_packagedDesktopFile;
++        return packaged;
++    }
+     Status status = withCurrentServices<Status>([]() {
+         Status current;
+         if (const KService::Ptr service = KApplicationTrader::preferredService(QLatin1String(MimeType))) {
+@@ -210,6 +236,11 @@ HandlerRegistration::Status HandlerRegistration::status() const
+ 
+ bool HandlerRegistration::registerHandler(QString *errorMessage)
+ {
++    if (!m_packagedDesktopFile.isEmpty()) {
++        // Never reached through the dialog, which offers no setup for a packaged helper.
++        *errorMessage = i18nc("@info", "This KRDC package registers its sign-in helper itself (%1).", m_packagedDesktopFile);
++        return false;
++    }
+     if (!m_problem.isEmpty()) {
+         *errorMessage = m_problem;
+         return false;
+diff --git a/rdp/avd/avdhandlerregistration.h b/rdp/avd/avdhandlerregistration.h
+index 46f2c767..566288eb 100644
+--- a/rdp/avd/avdhandlerregistration.h
++++ b/rdp/avd/avdhandlerregistration.h
+@@ -26,8 +26,21 @@ public:
+     static constexpr char MimeType[] = "x-scheme-handler/ms-appx-web";
+     static constexpr char DesktopFileName[] = "org.kde.krdc.avd-signin-handler.desktop";
+ 
+-    /** @p handlerPath is the helper to register; see defaultHandlerPath(). */
+-    explicit HandlerRegistration(const QString &handlerPath = defaultHandlerPath());
++    /**
++     * @p handlerPath is the helper to register; see defaultHandlerPath().
++     * @p packagedDesktopFile names the desktop file a package (the Flatpak)
++     * installs for the helper; KRDC then neither checks nor writes any
++     * registration, as only the desktop outside the sandbox decides which
++     * application opens the links. Empty for native builds; see
++     * packagedDesktopFileName().
++     */
++    explicit HandlerRegistration(const QString &handlerPath = defaultHandlerPath(), const QString &packagedDesktopFile = packagedDesktopFileName());
++
++    /**
++     * The desktop file the package installs for the helper (set at build time), when running inside
++     * that package's Flatpak sandbox; otherwise, and always for native builds, an empty string.
++     */
++    static QString packagedDesktopFileName();
+ 
+     /**
+      * The helper next to the running executable, as in a build tree, or else
+@@ -70,6 +83,7 @@ private:
+ 
+     QString m_handlerPath;
+     QString m_problem;
++    QString m_packagedDesktopFile;
+ };
+ 
+ namespace detail
+diff --git a/rdp/avd/avd-signin-handler.desktop.in b/rdp/avd/avd-signin-handler.desktop.in
+new file mode 100644
+index 00000000..97480749
+--- /dev/null
++++ b/rdp/avd/avd-signin-handler.desktop.in
+@@ -0,0 +1,14 @@
++# SPDX-FileCopyrightText: 2026 KRDC contributors
++# SPDX-License-Identifier: CC0-1.0
++#
++# Only installed by packages built with KRDC_AVD_PACKAGED_HANDLER (the Flatpak), which register the
++# helper for ms-appx-web: links at install time; see doc/azure-virtual-desktop.md.
++[Desktop Entry]
++Type=Application
++Name=KRDC Azure Virtual Desktop sign-in
++Comment=Hands Microsoft Entra sign-ins from the browser back to KRDC
++Icon=@KRDC_APP_ID@
++Exec=krdc-avd-signin-handler %u
++MimeType=x-scheme-handler/ms-appx-web;
++NoDisplay=true
++Terminal=false
+diff --git a/rdp/avd/krdc-avd-signin-handler-launcher.in b/rdp/avd/krdc-avd-signin-handler-launcher.in
+new file mode 100644
+index 00000000..962a2d12
+--- /dev/null
++++ b/rdp/avd/krdc-avd-signin-handler-launcher.in
+@@ -0,0 +1,7 @@
++#!/bin/sh
++# SPDX-FileCopyrightText: 2026 KRDC contributors
++# SPDX-License-Identifier: CC0-1.0
++#
++# Started by the desktop for ms-appx-web: links through the package's desktop file.
++# Only installed by packages built with KRDC_AVD_PACKAGED_HANDLER.
++exec "@KDE_INSTALL_FULL_LIBEXECDIR@/krdc-avd-signin-handler" "$@"

@@ -1,0 +1,247 @@
+{
+    "id": "io.github.manicminer.krdc",
+    "runtime": "org.kde.Platform",
+    "runtime-version": "6.11",
+    "sdk": "org.kde.Sdk",
+    "command": "krdc",
+    "branch": "stable",
+    "build-options": {
+        "no-debuginfo": true
+    },
+    "cleanup": [
+        "/include",
+        "/lib/cmake",
+        "/lib/pkgconfig",
+        "/lib/*.a",
+        "/lib/*.la",
+        "/share/man",
+        "/share/doc"
+    ],
+    "finish-args": [
+        "--share=ipc",
+        "--share=network",
+        "--socket=wayland",
+        "--socket=fallback-x11",
+        "--socket=pulseaudio",
+        "--device=dri",
+        "--env=OPENSSL_CONF=/app/share/legacy-openssl.cnf",
+        "--talk-name=org.freedesktop.secrets",
+        "--talk-name=org.kde.kwalletd6",
+        "--talk-name=org.kde.StatusNotifierWatcher",
+        "--talk-name=org.kde.keyboard"
+    ],
+    "modules": [
+        {
+            "name": "qtkeychain",
+            "buildsystem": "cmake-ninja",
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DBUILD_WITH_QT6=ON",
+                "-DCMAKE_INSTALL_LIBDIR=/app/lib",
+                "-DLIB_INSTALL_DIR=/app/lib",
+                "-DBUILD_TRANSLATIONS=OFF",
+                "-DBUILD_TESTING=OFF"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/frankosterfeld/qtkeychain/archive/refs/tags/0.17.0.tar.gz",
+                    "sha256": "3b85c3929034b0a99da777130c34d99f006fcd3a9d56564159399a33fee0e504"
+                }
+            ]
+        },
+        {
+            "name": "libssh",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DWITH_DEBUG_CALLTRACE:BOOL=OFF",
+                "-DWITH_EXAMPLES:BOOL=OFF",
+                "-DWITH_SERVER:BOOL=OFF"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://www.libssh.org/files/0.12/libssh-0.12.2.tar.xz",
+                    "sha256": "49560f677d96e3706a904ac2de1116e25f3680937d51e5c92198fcba4a1c1e9f"
+                }
+            ]
+        },
+        {
+            "name": "libvncserver",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+                "-DWITH_EXAMPLES:BOOL=OFF",
+                "-DWITH_GTK:BOOL=OFF",
+                "-DWITH_SDL:BOOL=OFF",
+                "-DWITH_SYSTEMD:BOOL=OFF",
+                "-DWITH_TESTS:BOOL=OFF"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/LibVNC/libvncserver/archive/LibVNCServer-0.9.15.tar.gz",
+                    "sha256": "62352c7795e231dfce044beb96156065a05a05c974e5de9e023d688d8ff675d7"
+                }
+            ]
+        },
+        {
+            "name": "krb5",
+            "buildsystem": "autotools",
+            "subdir": "src",
+            "config-opts": [
+                "--disable-static",
+                "--without-ldap"
+            ],
+            "cleanup": [
+                "/bin",
+                "/sbin",
+                "/share/examples",
+                "/var"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://kerberos.org/dist/krb5/1.22/krb5-1.22.2.tar.gz",
+                    "sha256": "3243ffbc8ea4d4ac22ddc7dd2a1dc54c57874c40648b60ff97009763554eaf13"
+                }
+            ]
+        },
+        {
+            "name": "pkcs11-helper",
+            "buildsystem": "autotools",
+            "config-opts": [
+                "--disable-static"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/OpenSC/pkcs11-helper/archive/refs/tags/pkcs11-helper-1.31.0.tar.gz",
+                    "sha256": "585e0347892bdf45220b080c9eae9216b461f96369c19be1e4bb6d80a078dc6b"
+                },
+                {
+                    "type": "script",
+                    "dest-filename": "autogen.sh",
+                    "commands": [
+                        "autoreconf -vfi"
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "cjson",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+                "-DENABLE_CJSON_TEST=OFF",
+                "-DENABLE_CJSON_UTILS=OFF",
+                "-DBUILD_SHARED_LIBS=ON"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz",
+                    "sha256": "7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562"
+                }
+            ]
+        },
+        {
+            "name": "freerdp",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_LIBDIR:PATH=lib",
+                "-DBUILD_TESTING=OFF",
+                "-DWITH_AAD=ON",
+                "-DWITH_CJSON_REQUIRED=ON",
+                "-DWITH_JSONC_REQUIRED=OFF",
+                "-DCHANNEL_TSMF=OFF",
+                "-DCHANNEL_URBDRC=ON",
+                "-DWITH_CLIENT_SDL:BOOL=OFF",
+                "-DWITH_CLIENT_SDL2:BOOL=OFF",
+                "-DWITH_CLIENT_SDL3:BOOL=OFF",
+                "-DWITH_CLIENT_X11:BOOL=OFF",
+                "-DWITH_SHADOW:BOOL=OFF",
+                "-DWITH_PROXY:BOOL=OFF",
+                "-DWITH_PLATFORM_SERVER:BOOL=OFF",
+                "-DWITH_SERVER=OFF",
+                "-DWITH_SAMPLE=OFF",
+                "-DWITH_CUPS=ON",
+                "-DWITH_DSP_FFMPEG=ON",
+                "-DWITH_FAAC=OFF",
+                "-DWITH_FAAD2=OFF",
+                "-DWITH_FFMPEG=ON",
+                "-DWITH_FUSE=OFF",
+                "-DWITH_KRB5=ON",
+                "-DWITH_MANPAGES=OFF",
+                "-DWITH_OSS=OFF",
+                "-DWITH_PCSC=ON",
+                "-DWITH_PKCS11=ON",
+                "-DWITH_PULSE=ON",
+                "-DWITH_SWSCALE=ON",
+                "-DWITH_WAYLAND=OFF",
+                "-DWITH_WEBVIEW=OFF",
+                "-DWITH_WINPR_TOOLS=OFF",
+                "-DWITH_SIMD=ON"
+            ],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.33.0.tar.gz",
+                    "sha256": "3b5e7733e667ad66f54e0db51d952268c9d08b2e71a4fade44c716ab29dd5657"
+                }
+            ]
+        },
+        {
+            "name": "legacy-openssl-cnf",
+            "buildsystem": "simple",
+            "build-commands": [
+                "install -Dm644 legacy-openssl.cnf ${FLATPAK_DEST}/share/legacy-openssl.cnf"
+            ],
+            "sources": [
+                {
+                    "type": "file",
+                    "path": "../../legacy-openssl.cnf"
+                }
+            ]
+        },
+        {
+            "name": "krdc",
+            "buildsystem": "cmake-ninja",
+            "builddir": true,
+            "config-opts": [
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                "-DKRDC_APP_ID=io.github.manicminer.krdc",
+                "-DKRDC_AVD_PACKAGED_HANDLER=ON",
+                "-DWITH_SPICE=OFF",
+                "-DBUILD_TESTING=OFF"
+            ],
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../..",
+                    "skip": [
+                        ".git",
+                        ".idea",
+                        "build",
+                        "cmake-build-debug"
+                    ]
+                },
+                {
+                    "type": "file",
+                    "path": "brand-metadata.py"
+                }
+            ],
+            "post-install": [
+                "python3 -I \"${FLATPAK_BUILDER_BUILDDIR}/brand-metadata.py\" --prefix \"${FLATPAK_DEST}\" --app-id \"${FLATPAK_ID}\" --version 0 --date 1970-01-01"
+            ]
+        }
+    ]
+}

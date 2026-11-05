@@ -149,6 +149,7 @@ private Q_SLOTS:
     void init();
     void defaultHandlerIsBuilt();
     void nothingRegisteredImplicitly();
+    void packagedHelperWritesNothing();
     void registersOnRequest();
     void reportsOtherHandler();
     void reportsOtherKrdcHandler();
@@ -199,6 +200,30 @@ void AvdHandlerRegistrationTest::nothingRegisteredImplicitly()
     QVERIFY(status.currentName.isEmpty());
     QVERIFY(!QFile::exists(applicationsDir() + QLatin1Char('/') + QLatin1String(HandlerRegistration::DesktopFileName)));
     QVERIFY(mimeappsDefault().isEmpty());
+}
+
+void AvdHandlerRegistrationTest::packagedHelperWritesNothing()
+{
+    // Native builds name no packaged desktop file; their registration is unchanged.
+    QVERIFY(HandlerRegistration::packagedDesktopFileName().isEmpty());
+
+    // A package (the Flatpak) exports the helper's desktop file itself: KRDC reports it as set up,
+    // offers nothing to set up and writes nothing, even with another handler configured in its view.
+    writeDesktopFile(QStringLiteral("test.OtherBroker.desktop"),
+                     "[Desktop Entry]\nType=Application\nName=Other Broker\nExec=/usr/bin/false %u\nMimeType=x-scheme-handler/ms-appx-web;\nNoDisplay=true\n");
+    makeDefault(QStringLiteral("test.OtherBroker.desktop"));
+    const QByteArray mimeappsBefore = readBytes(mimeappsPath());
+    const QString packaged = QStringLiteral("io.github.example.App.avd-signin-handler.desktop");
+    HandlerRegistration registration(QStringLiteral("/nonexistent/krdc-avd-signin-handler"), packaged);
+    const auto status = registration.status();
+    QCOMPARE(status.state, HandlerRegistration::State::Registered);
+    QCOMPARE(status.currentDesktopFile, packaged);
+    QString error;
+    QVERIFY(!registration.registerHandler(&error));
+    QVERIFY(error.contains(packaged));
+    QCOMPARE(readBytes(mimeappsPath()), mimeappsBefore);
+    QVERIFY(!QFile::exists(applicationsDir() + QLatin1Char('/') + QLatin1String(HandlerRegistration::DesktopFileName)));
+    QVERIFY(!QFile::exists(applicationsDir() + QLatin1Char('/') + packaged));
 }
 
 void AvdHandlerRegistrationTest::registersOnRequest()

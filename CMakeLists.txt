@@ -94,6 +94,15 @@ endif(WIN32)
 
 option(WITH_VNC "Enable VNC support." ON)
 add_feature_info(VNC WITH_VNC "Building with support for the VNC protocol. Disable with -DWITH_VNC=NO")
+# The application (desktop file, Wayland app_id) ID. Packages of forks set their own, e.g. the Flatpak.
+set(KRDC_APP_ID "org.kde.krdc" CACHE STRING "Application ID KRDC identifies itself with")
+if(NOT KRDC_APP_ID MATCHES "^[A-Za-z_][A-Za-z0-9_-]*(\\.[A-Za-z_][A-Za-z0-9_-]*)+$")
+    message(FATAL_ERROR "KRDC_APP_ID is not a valid application ID: ${KRDC_APP_ID}")
+endif()
+# Packages that register the AVD sign-in helper for ms-appx-web: links themselves (the Flatpak exports
+# its desktop file). KRDC then writes no registration of its own. Off for native builds.
+option(KRDC_AVD_PACKAGED_HANDLER "Install a desktop file registering the AVD sign-in helper (for sandboxed packages)" OFF)
+
 option(WITH_RDP "Enable RDP support using FreeRDP" ON)
 add_feature_info(RDP WITH_RDP "Building with support for the RDP protocol. Disable with -DWITH_RDP=NO")
 option(WITH_SPICE "Enable SPICE support." ON)
@@ -277,6 +286,7 @@ target_include_directories(krdc_objects PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMA
 
 add_executable(krdc main.cpp)
 target_link_libraries(krdc krdc_objects)
+target_compile_definitions(krdc PRIVATE KRDC_APP_ID="${KRDC_APP_ID}")
 # Building krdc alone, as IDE run targets do, must also build the plugins it loads.
 get_property(krdc_plugins GLOBAL PROPERTY KRDC_PLUGINS)
 if(krdc_plugins)

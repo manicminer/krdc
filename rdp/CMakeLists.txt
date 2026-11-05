@@ -8,6 +8,15 @@ target_link_libraries(krdc_avdchannel PUBLIC Qt::Core)
 add_executable(krdc-avd-signin-handler avd/avdsigninhandler.cpp)
 target_link_libraries(krdc-avd-signin-handler krdc_avdchannel Qt::Network)
 install(TARGETS krdc-avd-signin-handler DESTINATION ${KDE_INSTALL_LIBEXECDIR})
+if(KRDC_AVD_PACKAGED_HANDLER)
+    # Named after the application ID, as Flatpak only exports such desktop files. The command is
+    # looked up in the package's PATH (Flatpak runs it in a new sandbox of the same application).
+    set(KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE "${KRDC_APP_ID}.avd-signin-handler.desktop")
+    configure_file(avd/avd-signin-handler.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE} @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE} DESTINATION ${KDE_INSTALL_APPDIR})
+    configure_file(avd/krdc-avd-signin-handler-launcher.in ${CMAKE_CURRENT_BINARY_DIR}/krdc-avd-signin-handler-launcher @ONLY)
+    install(PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/krdc-avd-signin-handler-launcher DESTINATION ${KDE_INSTALL_BINDIR} RENAME krdc-avd-signin-handler)
+endif()
 
 # Code without widgets, shared by the plugin and its tests.
 add_library(krdc_rdpcore STATIC)
@@ -36,6 +45,9 @@ ecm_qt_declare_logging_category(krdc_rdpcore
 
 target_compile_definitions(krdc_rdpcore PRIVATE TRANSLATION_DOMAIN=\"krdc\"
     KRDC_AVD_HANDLER_INSTALL_PATH=\"${KDE_INSTALL_FULL_LIBEXECDIR}/krdc-avd-signin-handler\")
+if(KRDC_AVD_PACKAGED_HANDLER)
+    target_compile_definitions(krdc_rdpcore PRIVATE KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE=\"${KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE}\")
+endif()
 target_include_directories(krdc_rdpcore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${FreeRDP_INCLUDE_DIR} ${WinPR_INCLUDE_DIR})
 
 target_link_libraries(krdc_rdpcore

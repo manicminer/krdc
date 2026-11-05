@@ -11,7 +11,7 @@ function(krdc_isolate_tests)
         string(SUBSTRING "${runtime_id}" 0 8 runtime_id)
         set(runtime "${CMAKE_BINARY_DIR}/rt/${runtime_id}")
         set_tests_properties(${test} PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${home};XDG_CONFIG_HOME=${home}/config;XDG_DATA_HOME=${home}/data;XDG_CACHE_HOME=${home}/cache;XDG_STATE_HOME=${home}/state;XDG_RUNTIME_DIR=${runtime};DBUS_SESSION_BUS_ADDRESS=disabled:;QT_LOGGING_RULES=*.debug=false;BROWSER=/bin/false"
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;HOME=${home};XDG_CONFIG_HOME=${home}/config;XDG_DATA_HOME=${home}/data;XDG_CACHE_HOME=${home}/cache;XDG_STATE_HOME=${home}/state;XDG_RUNTIME_DIR=${runtime};DBUS_SESSION_BUS_ADDRESS=disabled:;QT_LOGGING_RULES=*.debug=false;BROWSER=/bin/false;FLATPAK_ID="
         )
         file(MAKE_DIRECTORY "${home}/config" "${home}/data" "${home}/cache" "${home}/state" "${runtime}")
         file(CHMOD "${CMAKE_BINARY_DIR}/rt" "${runtime}" DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)

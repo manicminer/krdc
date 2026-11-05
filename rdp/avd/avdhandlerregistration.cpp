@@ -5,6 +5,7 @@
 */
 
 #include "avd/avdhandlerregistration.h"
+#include "avd/avdcallbackchannel.h"
 
 #include <KApplicationTrader>
 #include <KLocalizedString>
@@ -140,8 +141,14 @@ bool restoreFile(const QString &path, const FileSnapshot &snapshot)
 }
 }
 
-HandlerRegistration::HandlerRegistration(const QString &handlerPath)
+HandlerRegistration::HandlerRegistration(const QString &handlerPath, const QString &packagedDesktopFile)
+    : m_packagedDesktopFile(packagedDesktopFile)
 {
+    if (!m_packagedDesktopFile.isEmpty()) {
+        // The package registers the helper; its path inside the sandbox means nothing to the desktop.
+        m_handlerPath = handlerPath;
+        return;
+    }
     const QFileInfo info(handlerPath);
     const QString canonical = handlerPath.isEmpty() ? QString() : info.canonicalFilePath();
     if (canonical.isEmpty()) {
@@ -158,6 +165,19 @@ HandlerRegistration::HandlerRegistration(const QString &handlerPath)
     } else {
         m_handlerPath = canonical;
     }
+}
+
+QString HandlerRegistration::packagedDesktopFileName()
+{
+#ifdef KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE
+    // Only inside the package's sandbox: the same build run elsewhere (its tests) behaves natively.
+    if (!CallbackChannel::flatpakAppId().isEmpty()) {
+        return QStringLiteral(KRDC_AVD_PACKAGED_HANDLER_DESKTOP_FILE);
+    }
+    return {};
+#else
+    return {};
+#endif
 }
 
 QString HandlerRegistration::defaultHandlerPath()
@@ -186,6 +206,12 @@ QString HandlerRegistration::command() const
 
 HandlerRegistration::Status HandlerRegistration::status() const
 {
+    if (!m_packagedDesktopFile.isEmpty()) {
+        Status packaged;
+        packaged.state = State::Registered;
+        packaged.currentDesktopFile = m_packagedDesktopFile;
+        return packaged;
+    }
     Status status = withCurrentServices<Status>([]() {
         Status current;
         if (const KService::Ptr service = KApplicationTrader::preferredService(QLatin1String(MimeType))) {
@@ -210,6 +236,11 @@ HandlerRegistration::Status HandlerRegistration::status() const
 
 bool HandlerRegistration::registerHandler(QString *errorMessage)
 {
+    if (!m_packagedDesktopFile.isEmpty()) {
+        // Never reached through the dialog, which offers no setup for a packaged helper.
+        *errorMessage = i18nc("@info", "This KRDC package registers its sign-in helper itself (%1).", m_packagedDesktopFile);
+        return false;
+    }
     if (!m_problem.isEmpty()) {
         *errorMessage = m_problem;
         return false;

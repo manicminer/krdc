@@ -9,6 +9,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QStringList>
 
 #include <algorithm>
 #include <cerrno>
@@ -87,6 +88,35 @@ QString socketName(const QString &state)
     return QString::fromLatin1(hash.left(SocketNameLength));
 }
 
+QString runtimeBase(const QString &runtimeDirectory, const QString &flatpakAppId)
+{
+    if (flatpakAppId.isEmpty()) {
+        return runtimeDirectory;
+    }
+    // Application IDs as Flatpak accepts them: at least three elements, none empty or starting with a
+    // digit, only ASCII letters, digits, '_' and '-', at most 255 characters. Nothing else can choose a path.
+    const QStringList elements = flatpakAppId.split(QLatin1Char('.'));
+    const auto validElement = [](const QString &element) {
+        return !element.isEmpty() && !element.front().isDigit() && std::all_of(element.cbegin(), element.cend(), [](QChar c) {
+            return (c >= QLatin1Char('a') && c <= QLatin1Char('z')) || (c >= QLatin1Char('A') && c <= QLatin1Char('Z'))
+                || (c >= QLatin1Char('0') && c <= QLatin1Char('9')) || c == QLatin1Char('_') || c == QLatin1Char('-');
+        });
+    };
+    if (flatpakAppId.size() > 255 || elements.size() < 3 || !std::all_of(elements.cbegin(), elements.cend(), validElement)) {
+        return {};
+    }
+    return QDir::cleanPath(runtimeDirectory) + QStringLiteral("/app/") + flatpakAppId;
+}
+
+QString flatpakAppId()
+{
+    // Flatpak creates /.flatpak-info in every sandbox and sets FLATPAK_ID; the variable alone is not trusted.
+    if (!QFile::exists(QStringLiteral("/.flatpak-info"))) {
+        return {};
+    }
+    return qEnvironmentVariable("FLATPAK_ID");
+}
+
 QString directory(bool create, DirectoryError *error)
 {
     const auto fail = [error](DirectoryError reason) {
@@ -103,7 +133,12 @@ QString directory(bool create, DirectoryError *error)
     if (!isPrivateDirectory(QFile::encodeName(runtime))) {
         return fail(DirectoryError::Insecure);
     }
-    const QString path = QDir::cleanPath(runtime) + QLatin1Char('/') + QLatin1String(DirectoryName);
+    const QString base = runtimeBase(runtime, flatpakAppId());
+    // Flatpak creates app/<id> owner-only; it must be, as XDG_RUNTIME_DIR itself.
+    if (base.isEmpty() || !isPrivateDirectory(QFile::encodeName(base))) {
+        return fail(DirectoryError::Insecure);
+    }
+    const QString path = QDir::cleanPath(base) + QLatin1Char('/') + QLatin1String(DirectoryName);
     const QByteArray encoded = QFile::encodeName(path);
     if (encoded.size() + 1 + SocketNameLength >= qsizetype(sizeof(sockaddr_un::sun_path))) {
         return fail(DirectoryError::PathTooLong);
