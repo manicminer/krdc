@@ -7,6 +7,7 @@
 #include "preferencesdialog.h"
 #include "hostpreferenceslist.h"
 #include "krdc_debug.h"
+#include "remoteviewfactory.h"
 #include "ui_general.h"
 
 #include <KConfigSkeleton>
@@ -28,7 +29,7 @@ PreferencesDialog::PreferencesDialog(QWidget *parent, KConfigSkeleton *skeleton)
     addPage(hostPreferencesList, i18n("Hosts"), QStringLiteral("computer"), i18n("Host Configuration"));
 
     m_pluginSelector = new KPluginWidget();
-    const QVector<KPluginMetaData> offers = KPluginMetaData::findPlugins(QStringLiteral("krdc"));
+    const QVector<KPluginMetaData> offers = RemoteViewFactory::compatiblePlugins();
     m_pluginSelector->setConfig(KSharedConfig::openConfig()->group(QStringLiteral("Plugins")));
     m_pluginSelector->addPlugins(offers, i18n("Plugins"));
     addPage(m_pluginSelector, i18n("Plugins"), QStringLiteral("preferences-plugin"), i18n("Plugin Configuration"));

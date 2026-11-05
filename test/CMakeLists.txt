@@ -6,7 +6,7 @@ if(NOT BUILD_TEST)
     return()
 endif()
 
-add_library(krdc_testplugin MODULE)
+krdc_add_plugin(krdc_testplugin)
 
 target_sources(krdc_testplugin PRIVATE
     testviewfactory.cpp
@@ -21,5 +21,3 @@ target_link_libraries(krdc_testplugin
     Qt::Gui
     krdccore
 )
-
-install(TARGETS krdc_testplugin DESTINATION ${KDE_INSTALL_PLUGINDIR}/krdc)

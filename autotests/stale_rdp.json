@@ -1,0 +1,8 @@
+{
+    "KPlugin": {
+        "Description": "Same plugin id as the RDP plugin, metadata of a KRDC release without plugin versions",
+        "EnabledByDefault": true,
+        "Name": "Stale RDP"
+    },
+    "X-KDE-KRDC-Sorting": 60
+}

@@ -1,0 +1,9 @@
+{
+    "KPlugin": {
+        "Description": "Compatible plugin left in the build tree by a protocol that is no longer built",
+        "EnabledByDefault": true,
+        "Name": "Toggled off"
+    },
+    "X-KDE-KRDC-PluginVersion": 2,
+    "X-KDE-KRDC-Sorting": 20
+}

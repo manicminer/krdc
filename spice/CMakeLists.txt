@@ -1,4 +1,4 @@
-add_library(krdc_spiceplugin MODULE)
+krdc_add_plugin(krdc_spiceplugin)
 
 target_sources(krdc_spiceplugin PRIVATE
     spicehostpreferences.cpp
@@ -28,7 +28,7 @@ target_link_libraries(krdc_spiceplugin
     krdccore
 )
 
-add_library(kcm_krdc_spiceplugin)
+krdc_add_kcm(kcm_krdc_spiceplugin)
 
 target_sources(kcm_krdc_spiceplugin PRIVATE
     spicepreferences.cpp
@@ -47,4 +47,3 @@ target_link_libraries(kcm_krdc_spiceplugin
 add_dependencies(kcm_krdc_spiceplugin krdc_spiceplugin)
 
 install(TARGETS kcm_krdc_spiceplugin DESTINATION ${KDE_INSTALL_PLUGINDIR}/krdc/kcms)
-install(TARGETS krdc_spiceplugin DESTINATION ${KDE_INSTALL_PLUGINDIR}/krdc)

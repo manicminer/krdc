@@ -66,5 +66,6 @@
         "Name[zh_TW]": "SPICE"
     },
     "X-KDE-ConfigModule": "krdc/kcms/kcm_krdc_spiceplugin",
+    "X-KDE-KRDC-PluginVersion": 2,
     "X-KDE-KRDC-Sorting": 30
 }

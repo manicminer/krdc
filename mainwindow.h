@@ -9,6 +9,7 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "connectionlaunch.h"
 #include "connectionstatuswidget.h"
 #include "remoteview.h"
 #include "remoteviewfactory.h"
@@ -49,6 +50,8 @@ public:
 
 public Q_SLOTS:
     void newConnection(const QUrl &newUrl = QUrl(), bool switchFullscreenWhenConnected = false, const QString &tabName = QString());
+    /** Starts a connection that may carry settings a URL cannot, such as an imported file. */
+    void newConnectionFromLaunch(const ConnectionLaunch &launch, bool switchFullscreenWhenConnected = false, const QString &tabName = QString());
     void setFactor(int scale);
 
 protected:
@@ -102,7 +105,9 @@ private:
     void detachRemoteView(RemoteView *view);
     void setAddressInput(const QUrl &url);
     ConnectionStatusWidget *statusWidgetFor(RemoteView *view) const;
-    void reconnectInTab(QWidget *tab, const QUrl &url);
+    void reconnectInTab(QWidget *tab, const ConnectionLaunch &launch);
+    void openLaunch(const ConnectionLaunch &launch, bool switchFullscreenWhenConnected, const QString &tabName, const QString &enteredAddress);
+    bool isRemembered(RemoteView *view) const;
     /** The name shown in the tab of a connection, or empty when the tab shows its address. */
     QString connectionName(QWidget *tab, const QUrl &url) const;
     ConnectionError unexplainedDisconnect(const ConnectionStatusWidget *statusWidget) const;
@@ -147,6 +152,8 @@ private:
 
     QMap<RemoteView *, bool> m_savedGrabStatesBeforeFullscreen;
     int m_insertTabIndex = -1; // where newConnection() puts its tab, for reconnecting in place
+    // Launches whose URL cannot reproduce them; kept out of history and restored sessions.
+    QHash<RemoteView *, ConnectionLaunch> m_unrememberedLaunches;
 
 Q_SIGNALS:
     void scaleUpdated(bool scale); // scale state has changed

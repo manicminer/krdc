@@ -38,8 +38,14 @@ endif()
 
 find_package(Qt6Keychain ${QT_KEYCHAIN_MIN_VERSION} REQUIRED)
 
+if(BUILD_TESTING)
+    find_package(Qt6Test ${QT_MIN_VERSION} CONFIG REQUIRED)
+    include(ECMAddTests)
+endif()
+
 find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS
     Config
+    CoreAddons
     KCMUtils
     DNSSD
     NotifyConfig
@@ -53,6 +59,7 @@ find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS
     NotifyConfig
     I18n
     KIO
+    Service
     Crash
     GuiAddons
 )
@@ -107,6 +114,40 @@ set_package_properties(LibSSH PROPERTIES
     TYPE OPTIONAL
 )
 
+# KRDC first looks for plugins relative to its executable, where they get
+# installed, so a build tree or another prefix uses its own plugins instead of
+# those of an installed KRDC. The build tree mirrors that layout, as bin/krdc
+# is taken by the executable.
+foreach(dir BINDIR PLUGINDIR)
+    if(IS_ABSOLUTE "${KDE_INSTALL_${dir}}")
+        set(krdc_install_${dir} "${KDE_INSTALL_${dir}}")
+    else()
+        set(krdc_install_${dir} "${CMAKE_INSTALL_PREFIX}/${KDE_INSTALL_${dir}}")
+    endif()
+endforeach()
+file(RELATIVE_PATH KRDC_RELATIVE_PLUGINDIR "${krdc_install_BINDIR}" "${krdc_install_PLUGINDIR}")
+get_filename_component(KRDC_BUILD_PLUGINDIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${KRDC_RELATIVE_PLUGINDIR}" ABSOLUTE)
+string(FIND "${KRDC_BUILD_PLUGINDIR}/" "${CMAKE_BINARY_DIR}/" krdc_plugindir_in_build)
+if(NOT krdc_plugindir_in_build EQUAL 0)
+    # Plugins installed far from the executable: keep them in the build tree.
+    set(KRDC_RELATIVE_PLUGINDIR "../plugins")
+    get_filename_component(KRDC_BUILD_PLUGINDIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${KRDC_RELATIVE_PLUGINDIR}" ABSOLUTE)
+endif()
+
+function(krdc_add_plugin plugin)
+    kcoreaddons_add_plugin(${plugin} INSTALL_NAMESPACE "krdc")
+    set_target_properties(${plugin} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${KRDC_BUILD_PLUGINDIR}/krdc")
+    set_property(GLOBAL APPEND PROPERTY KRDC_PLUGINS ${plugin})
+    set_property(GLOBAL APPEND PROPERTY KRDC_VIEW_PLUGINS ${plugin})
+endfunction()
+
+# Configuration modules are found by path through the same plugin search.
+function(krdc_add_kcm kcm)
+    add_library(${kcm})
+    set_target_properties(${kcm} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${KRDC_BUILD_PLUGINDIR}/krdc/kcms")
+    set_property(GLOBAL APPEND PROPERTY KRDC_PLUGINS ${kcm})
+endfunction()
+
 add_subdirectory(core)
 
 if(WITH_VNC)
@@ -132,9 +173,10 @@ if(WITH_RDP)
         list(APPEND CMAKE_PREFIX_PATH /usr/local/share/cmake/Modules/WinPR3)
     endif()
 
-    find_package(FreeRDP 3 REQUIRED)
+    # Tested baseline for the Azure Virtual Desktop support, not the earliest version that may work.
+    find_package(FreeRDP 3.32.2 REQUIRED)
     find_package(WinPR 3 REQUIRED)
-    find_package(FreeRDP-Client 3 REQUIRED)
+    find_package(FreeRDP-Client 3.32.2 REQUIRED)
     find_package(KF6Screen ${KF_MIN_VERSION})
     find_package(KF6Solid ${KF_MIN_VERSION})
     set_package_properties(KF6Solid PROPERTIES
@@ -181,11 +223,12 @@ else()
 endif()
 
 
-add_executable(krdc)
+# Everything but main(), so autotests can build the real main window.
+add_library(krdc_objects OBJECT)
 
-target_compile_definitions(krdc PRIVATE -DBUILD_ZEROCONF)
+target_compile_definitions(krdc_objects PUBLIC -DBUILD_ZEROCONF)
 
-target_sources(krdc PRIVATE
+target_sources(krdc_objects PRIVATE
     config/hostpreferenceslist.cpp
     config/preferencesdialog.cpp
     floatingtoolbar.cpp
@@ -197,16 +240,15 @@ target_sources(krdc PRIVATE
     tabbedviewwidget.cpp
     factorwidget.cpp
     mainwindow.cpp
-    main.cpp
 
     krdc.qrc
 )
 
-ki18n_wrap_ui(krdc
+ki18n_wrap_ui(krdc_objects
     config/general.ui
 )
 
-ecm_qt_declare_logging_category(krdc
+ecm_qt_declare_logging_category(krdc_objects
     HEADER krdc_debug.h
     IDENTIFIER KRDC
     CATEGORY_NAME KRDC
@@ -214,7 +256,7 @@ ecm_qt_declare_logging_category(krdc
     EXPORT KRDC
 )
 
-target_link_libraries(krdc
+target_link_libraries(krdc_objects PUBLIC
     Qt::Network
     KF6::Bookmarks
     KF6::BookmarksWidgets
@@ -231,8 +273,31 @@ target_link_libraries(krdc
     KF6::XmlGui
     krdccore
 )
+target_include_directories(krdc_objects PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(krdc main.cpp)
+target_link_libraries(krdc krdc_objects)
+# Building krdc alone, as IDE run targets do, must also build the plugins it loads.
+get_property(krdc_plugins GLOBAL PROPERTY KRDC_PLUGINS)
+if(krdc_plugins)
+    add_dependencies(krdc ${krdc_plugins})
+endif()
+# Marks the build tree for krdc: it loads the plugins listed here, and no
+# others, such as those of protocols no longer built or of an installed KRDC.
+# Not installed; an installed KRDC searches the plugin path.
+get_property(krdc_view_plugins GLOBAL PROPERTY KRDC_VIEW_PLUGINS)
+set(krdc_build_manifest "")
+foreach(plugin ${krdc_view_plugins})
+    string(APPEND krdc_build_manifest "${KRDC_RELATIVE_PLUGINDIR}/krdc/$<TARGET_FILE_NAME:${plugin}>\n")
+endforeach()
+file(GENERATE OUTPUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/krdc-build-plugins" CONTENT "${krdc_build_manifest}")
 
 install(TARGETS krdc ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
+
+if(BUILD_TESTING)
+    add_subdirectory(autotests)
+endif()
+
 configure_file(org.kde.krdc.desktop.cmake ${CMAKE_CURRENT_BINARY_DIR}/org.kde.krdc.desktop @ONLY)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/org.kde.krdc.desktop DESTINATION ${KDE_INSTALL_APPDIR})

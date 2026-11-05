@@ -238,9 +238,8 @@ BOOL RdpSession::postConnect(freerdp *rdp)
     session->setState(State::Connected);
 
     auto &buffer = session->m_videoBuffer;
-    buffer = QImage(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
-                    freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
-                    QImage::Format_RGB32);
+    buffer =
+        QImage(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth), freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight), QImage::Format_RGB32);
 
     if (!gdi_init_ex(rdp, PIXEL_FORMAT_BGRX32, buffer.bytesPerLine(), buffer.bits(), nullptr)) {
         qCWarning(KRDC) << "Could not initialize GDI subsystem";
@@ -289,19 +288,31 @@ void RdpSession::postFinalDisconnect(freerdp *)
 
 BOOL RdpSession::authenticateEx(freerdp *instance, char **username, char **password, char **domain, rdp_auth_reason reason)
 {
-    Q_UNUSED(reason);
     auto session = reinterpret_cast<RdpContext *>(instance->context)->session;
-    // TODO: this needs to handle:
-    // gateway
-    // user
-    // smartcard
-    // AAD
-    // needs new settings
-    if (session->onAuthenticate(username, password, domain)) {
-        return true;
+    return session->onAuthenticate(reason, username, password, domain);
+}
+
+BOOL RdpSession::getAccessToken(freerdp *instance, AccessTokenType tokenType, char **token, size_t count, ...)
+{
+    auto session = reinterpret_cast<RdpContext *>(instance->context)->session;
+    if (!session || !session->m_tokenBroker) {
+        return FALSE;
     }
 
-    return false;
+    va_list args;
+    va_start(args, count);
+    const bool ok = session->m_tokenBroker->getAccessToken(tokenType, token, count, args);
+    va_end(args);
+
+    if (!ok) {
+        if (session->m_tokenBroker->canceled()) {
+            freerdp_set_last_error_if_not(instance->context, FREERDP_ERROR_CONNECT_CANCELLED);
+        } else {
+            qCWarning(KRDC) << "Microsoft Entra sign-in failed:" << session->m_tokenBroker->diagnostic();
+            session->setAccessTokenError(session->m_tokenBroker->lastError());
+        }
+    }
+    return ok ? TRUE : FALSE;
 }
 
 DWORD RdpSession::verifyChangedCertificateEx(freerdp *rdp,
@@ -487,8 +498,8 @@ BOOL RdpSession::clientContextNew(freerdp *instance, rdpContext *context)
     instance->PresentGatewayMessage = presentGatewayMessage;
     instance->ChooseSmartcard = chooseSmartcard;
     instance->RetryDialog = retryDialog;
-    // TODO
-    // instance->GetAccessToken = RdpAADView::getAccessToken;
+    // Replaces FreeRDP's default, which waits for input on the terminal.
+    instance->GetAccessToken = getAccessToken;
 
     return true;
 }
@@ -524,11 +535,22 @@ int RdpSession::clientContextStart(rdpContext *context)
 
     session->m_monitors.clear();
 
-    if (!freerdp_settings_set_string(settings, FreeRDP_ServerHostname, session->m_host.toUtf8().data())) {
-        return -1;
-    }
-    if (!freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, session->m_port)) {
-        return -1;
+    // With a connection file, its settings decide where and how to connect and
+    // log in; the host settings only decide how the session is shown locally.
+    const auto launch = session->m_launchProfile;
+    if (launch) {
+        QString error;
+        if (!launch->applyTo(settings, &error)) {
+            session->m_launchError = error;
+            return -1;
+        }
+    } else {
+        if (!freerdp_settings_set_string(settings, FreeRDP_ServerHostname, session->m_host.toUtf8().data())) {
+            return -1;
+        }
+        if (!freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, session->m_port)) {
+            return -1;
+        }
     }
 
     if (preferences->resolution() == RdpHostPreferences::Resolution::AllScreens) {
@@ -536,6 +558,9 @@ int RdpSession::clientContextStart(rdpContext *context)
             return -1;
         }
     } else {
+        if (launch && !freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, FALSE)) {
+            return -1;
+        }
         if (initializeSingleMonitor(settings, session)) {
             return -1;
         }
@@ -757,27 +782,29 @@ int RdpSession::clientContextStart(rdpContext *context)
         break;
     }
 
-    if (!freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, preferences->securityNLA())) {
-        return -1;
-    }
-    if (!freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, preferences->securityTLS())) {
-        return -1;
-    }
-    if (!freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, preferences->securityRDP())) {
-        return -1;
-    }
-    if (!freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, preferences->securityEXT())) {
-        return -1;
-    }
-    if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, preferences->consoleMode())) {
-        return -1;
-    }
-    if (preferences->preventSessionLock() && !freerdp_settings_set_uint32(settings, FreeRDP_FakeMouseMotionInterval, 180)) {
-        return -1;
+    if (!launch) {
+        if (!freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, preferences->securityNLA())) {
+            return -1;
+        }
+        if (!freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, preferences->securityTLS())) {
+            return -1;
+        }
+        if (!freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, preferences->securityRDP())) {
+            return -1;
+        }
+        if (!freerdp_settings_set_bool(settings, FreeRDP_ExtSecurity, preferences->securityEXT())) {
+            return -1;
+        }
+        if (!freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, preferences->consoleMode())) {
+            return -1;
+        }
+        if (!preferences->authPkgList().isEmpty()
+            && !freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, preferences->authPkgList().toUtf8().data())) {
+            return -1;
+        }
     }
 
-    if (!preferences->authPkgList().isEmpty()
-        && !freerdp_settings_set_string(settings, FreeRDP_AuthenticationPackageList, preferences->authPkgList().toUtf8().data())) {
+    if (preferences->preventSessionLock() && !freerdp_settings_set_uint32(settings, FreeRDP_FakeMouseMotionInterval, 180)) {
         return -1;
     }
 
@@ -818,7 +845,7 @@ int RdpSession::clientContextStart(rdpContext *context)
     }
 
     const auto gatewayServerAddress = QUrl::fromUserInput(preferences->gatewayServer());
-    if (preferences->useGateway() && !gatewayServerAddress.isEmpty()) {
+    if (!launch && preferences->useGateway() && !gatewayServerAddress.isEmpty()) {
         if (!freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, gatewayServerAddress.host().toUtf8().data())) {
             return -1;
         }
@@ -869,6 +896,18 @@ int RdpSession::clientContextStart(rdpContext *context)
             return -1;
         }
     }
+
+    session->m_credentials.setHostCredentials({session->m_user, session->m_domain, session->m_password});
+    if (launch) {
+        session->m_credentials.setGatewayCredentials({QString::fromUtf8(freerdp_settings_get_string(settings, FreeRDP_GatewayUsername)),
+                                                      QString::fromUtf8(freerdp_settings_get_string(settings, FreeRDP_GatewayDomain)),
+                                                      QString::fromUtf8(freerdp_settings_get_string(settings, FreeRDP_GatewayPassword))});
+        session->m_credentials.setGatewayUsesHostCredentials(freerdp_settings_get_bool(settings, FreeRDP_GatewayUseSameCredentials));
+    } else {
+        session->m_credentials.setGatewayCredentials({preferences->gatewayUsername(), preferences->gatewayDomain(), preferences->gatewayPassword()});
+        session->m_credentials.setGatewayUsesHostCredentials(preferences->useGateway() && preferences->gatewayUsername().isEmpty());
+    }
+    session->m_credentials.setEntraExpected(freerdp_settings_get_bool(settings, FreeRDP_AadSecurity));
 
     session->m_thread = std::thread(std::bind(&RdpSession::run, session));
     pthread_setname_np(session->m_thread.native_handle(), "rdp_session");
@@ -1249,9 +1288,8 @@ BOOL RdpSession::resizeDisplay(rdpContext *context)
     WINPR_ASSERT(settings);
 
     auto &buffer = session->m_videoBuffer;
-    buffer = QImage(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
-                    freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
-                    QImage::Format_RGB32);
+    buffer =
+        QImage(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth), freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight), QImage::Format_RGB32);
 
     if (!gdi_resize_ex(gdi, buffer.width(), buffer.height(), buffer.bytesPerLine(), PIXEL_FORMAT_BGRX32, buffer.bits(), nullptr)) {
         qCWarning(KRDC) << "Failed resizing GDI subsystem";
@@ -1351,11 +1389,20 @@ QString Certificate::toString() const
 RdpSession::RdpSession(RdpView *view)
     : QObject(nullptr)
     , m_view(view)
-    , m_firstPasswordTry(true)
 {
     auto entry = RdpClientEntry();
     m_context.rdp = freerdp_client_context_new(&entry);
     m_context.krdp->session = this;
+
+    m_tokenBroker = std::make_unique<RdpAccessTokenBroker>(reinterpret_cast<rdpClientContext *>(m_context.rdp));
+    m_tokenBroker->setSignInPrompt([this](const RdpAccessTokenBroker::SignInRequest &request) -> std::optional<Avd::AuthorizationCallback> {
+        const auto callback = m_uiHandoff.request<std::optional<Avd::AuthorizationCallback>>(this, [this, request]() {
+            std::optional<Avd::AuthorizationCallback> answer;
+            Q_EMIT signInRequested(request, &answer);
+            return answer;
+        });
+        return callback ? *callback : std::nullopt;
+    });
 }
 
 RdpSession::~RdpSession()
@@ -1424,6 +1471,28 @@ RdpHostPreferences *RdpSession::preferences() const
     return m_preferences;
 }
 
+void RdpSession::setLaunchProfile(std::shared_ptr<const RdpLaunchProfile> profile)
+{
+    m_launchProfile = std::move(profile);
+}
+
+QString RdpSession::launchError() const
+{
+    return m_launchError;
+}
+
+QString RdpSession::accessTokenError() const
+{
+    QMutexLocker locker(&m_accessTokenErrorMutex);
+    return m_accessTokenError;
+}
+
+void RdpSession::setAccessTokenError(const QString &error)
+{
+    QMutexLocker locker(&m_accessTokenErrorMutex);
+    m_accessTokenError = error;
+}
+
 void RdpSession::setHostPreferences(RdpHostPreferences *preferences)
 {
     m_preferences = preferences;
@@ -1454,6 +1523,9 @@ bool RdpSession::start()
     // queried from Qt's GUI thread, before FreeRDP starts its worker thread.
     m_outputScaleFactors = outputScaleFactors();
     m_errorEmitted = false;
+    m_uiHandoff.reset();
+    m_launchError.clear();
+    setAccessTokenError(QString());
 
     const qreal scale = outputScale();
     switch (m_preferences->resolution()) {
@@ -1485,6 +1557,7 @@ bool RdpSession::start()
 
 void RdpSession::stop()
 {
+    m_uiHandoff.cancel();
     freerdp_client_stop(m_context.rdp);
 }
 
@@ -1650,38 +1723,45 @@ void RdpSession::setState(RdpSession::State newState)
     Q_EMIT stateChanged();
 }
 
-bool RdpSession::onAuthenticate(char **username, char **password, char **domain)
+bool RdpSession::onAuthenticate(rdp_auth_reason reason, char **username, char **password, char **domain)
 {
-    Q_UNUSED(domain);
-
-    if (m_firstPasswordTry && m_user.size()) {
-        free(*username);
-        *username = _strdup(m_user.toUtf8().data());
-
-        free(*domain);
-        *domain = nullptr;
-        if (m_domain.size()) {
-            *domain = _strdup(m_domain.toUtf8().data());
-        }
-
-        free(*password);
-        *password = nullptr;
-        if (m_password.size()) {
-            *password = _strdup(m_password.toUtf8().data());
-            m_firstPasswordTry = false;
-            return true;
-        }
+    using Target = RdpCredentialRouter::Target;
+    const Target target = RdpCredentialRouter::targetForReason(reason);
+    if (target == Target::Unsupported) {
+        qCWarning(KRDC) << "KRDC cannot answer this authentication request:" << reason;
+        return false;
     }
 
-    Q_EMIT onAuthRequested();
+    RdpCredentialRouter::Credentials credentials;
+    if (const auto automatic = m_credentials.automaticAnswer(target)) {
+        credentials = *automatic;
+    } else {
+        struct Answer {
+            RdpCredentialRouter::Credentials credentials;
+            bool accepted = false;
+        };
+        const RdpCredentialRouter::Prompt prompt = m_credentials.promptFor(target);
+        const auto answer = m_uiHandoff.request<Answer>(this, [this, prompt]() {
+            Answer result;
+            Q_EMIT credentialsRequested(prompt, &result.credentials, &result.accepted);
+            return result;
+        });
+        if (!answer || !answer->accepted) {
+            return false;
+        }
+        credentials = answer->credentials;
+        m_credentials.accept(target, credentials);
+    }
 
-    free(*username);
-    *username = _strdup(m_user.toUtf8().data());
-    free(*domain);
-    *domain = _strdup(m_domain.toUtf8().data());
-    free(*password);
-    *password = _strdup(m_password.toUtf8().data());
-
+    const auto replace = [](char **field, const QString &value) {
+        free(*field);
+        *field = _strdup(value.toUtf8().constData());
+    };
+    if (target != Target::SmartcardPin) {
+        replace(username, credentials.username);
+        replace(domain, credentials.domain);
+    }
+    replace(password, credentials.password);
     return true;
 }
 

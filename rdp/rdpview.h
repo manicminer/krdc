@@ -12,9 +12,13 @@
 #include "rdpsession.h"
 #include "remoteview.h"
 
+#include "rdpaccesstoken.h"
+#include "rdpcredentials.h"
 #include "rdphostpreferences.h"
+#include "rdplaunchprofile.h"
 
 #include <QCursor>
+#include <QDialog>
 #include <QHash>
 #include <QPointer>
 #include <QUrl>
@@ -35,7 +39,8 @@ public:
                      KConfigGroup configGroup = KConfigGroup(),
                      const QString &user = QString(),
                      const QString &domain = QString(),
-                     const QString &password = QString());
+                     const QString &password = QString(),
+                     std::shared_ptr<const RdpLaunchProfile> launch = {});
 
     ~RdpView() override;
 
@@ -64,7 +69,8 @@ public:
 
 public Q_SLOTS:
     void scaleResize(int w, int h) override;
-    void onAuthRequested();
+    void onCredentialsRequested(const RdpCredentialRouter::Prompt &prompt, RdpCredentialRouter::Credentials *answer, bool *accepted);
+    void onSignInRequested(const RdpAccessTokenBroker::SignInRequest &request, std::optional<Avd::AuthorizationCallback> *callback);
     void onVerifyCertificate(RdpSession::CertificateResult *ret, const QString &certificate);
     void onVerifyChangedCertificate(RdpSession::CertificateResult *ret, const QString &oldCertificate, const QString &newCertificate);
     void onLogonError(const QString &error);
@@ -94,6 +100,9 @@ private:
     QString m_user;
     QString m_domain;
     QString m_password;
+    std::shared_ptr<const RdpLaunchProfile> m_launch;
+    // Credential or sign-in dialog waiting for the user, closed when quitting.
+    QPointer<QDialog> m_authPrompt;
     //
     bool m_quitting = false;
 

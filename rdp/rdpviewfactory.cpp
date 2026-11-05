@@ -6,16 +6,26 @@
 
 #include "rdpviewfactory.h"
 
+#include "avd/avdendpoints.h"
+#include "avd/avdtokenstore.h"
+#include "avd/avdworkspacecache.h"
+#include "avd/avdworkspacedialog.h"
+#include "rdplaunchprofile.h"
+
+#include <QAction>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QNetworkAccessManager>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTextStream>
 #include <QUrlQuery>
 
+#include <KConfigGroup>
 #include <KMessageBox>
 #include <KPluginFactory>
+#include <KSharedConfig>
 
 #include <utility>
 
@@ -33,22 +43,13 @@ static constexpr int ScreenModeFullScreen = 2;
 // Value of "gatewayusagemethod". KRDC has no equivalent of the other methods, such as using the
 // gateway only when a direct connection fails.
 static constexpr int GatewayAlways = 1;
+// FreeRDP connects through the gateway for this method too, so it needs the same consent.
+static constexpr int GatewayBypassLocal = 2;
 
 // Reads the "key:type:value" lines of an .rdp file. Keys are in lower case, as their case varies.
-static QHash<QString, QString> readRdpFile(const QString &filePath)
+static QHash<QString, QString> readRdpEntries(QTextStream &in)
 {
     QHash<QString, QString> entries;
-    const QFileInfo fileInfo(filePath);
-    if (!filePath.endsWith(QStringLiteral(".rdp"), Qt::CaseInsensitive) || !fileInfo.isFile() || fileInfo.size() > MaxRdpFileSize) {
-        return entries;
-    }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return entries;
-    }
-
-    QTextStream in(&file);
     while (!in.atEnd()) {
         const QString line = in.readLine();
         const int typeStart = line.indexOf(QLatin1Char(':'));
@@ -59,6 +60,22 @@ static QHash<QString, QString> readRdpFile(const QString &filePath)
         entries.insert(line.left(typeStart).trimmed().toLower(), line.mid(valueStart + 1));
     }
     return entries;
+}
+
+static QHash<QString, QString> readRdpFile(const QString &filePath)
+{
+    const QFileInfo fileInfo(filePath);
+    if (!filePath.endsWith(QStringLiteral(".rdp"), Qt::CaseInsensitive) || !fileInfo.isFile() || fileInfo.size() > MaxRdpFileSize) {
+        return {};
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return {};
+    }
+
+    QTextStream in(&file);
+    return readRdpEntries(in);
 }
 
 static int readInt(const QHash<QString, QString> &entries, const QString &key, int fallback)
@@ -112,9 +129,7 @@ RdpViewFactory::RdpViewFactory(QObject *parent, const QVariantList &args)
     m_connectToolTipString = i18n("Connect to a Windows Remote Desktop (RDP)");
 }
 
-RdpViewFactory::~RdpViewFactory()
-{
-}
+RdpViewFactory::~RdpViewFactory() = default;
 
 bool RdpViewFactory::supportsUrl(const QUrl &url) const
 {
@@ -151,11 +166,8 @@ RemoteViewFactory::ConnectionFile RdpViewFactory::loadConnectionFile(const QUrl 
     if (!userName.isEmpty()) {
         loadedUrl.setUserName(userName, QUrl::DecodedMode);
     }
-    // The password stays in the URL, out of the settings.
-    const QString password = entries.take(QStringLiteral("password"));
-    if (!password.isEmpty()) {
-        loadedUrl.setPassword(password, QUrl::DecodedMode);
-    }
+    // URLs end up in history and bookmarks, so a password in the file is dropped.
+    entries.remove(QStringLiteral("password"));
 
     const QString domain = entries.value(QStringLiteral("domain")).trimmed();
     if (!domain.isEmpty()) {
@@ -169,13 +181,11 @@ RemoteViewFactory::ConnectionFile RdpViewFactory::loadConnectionFile(const QUrl 
 
 bool RdpViewFactory::importFileSettings(const QHash<QString, QString> &entries, KConfigGroup configGroup, QWidget *parent) const
 {
-    // Any file can name any host, so a file must not change a host the user already has settings for.
-    if (configGroup.exists()) {
-        return true;
-    }
-
+    // A launch from loadLaunchFromFile() connects through the file's gateway even for a host with
+    // saved settings, so the gateway is checked and confirmed before those are considered.
+    const int gatewayUsage = readInt(entries, QStringLiteral("gatewayusagemethod"), 0);
     QString gatewayAddress;
-    if (readInt(entries, QStringLiteral("gatewayusagemethod"), 0) == GatewayAlways) {
+    if (gatewayUsage == GatewayAlways || gatewayUsage == GatewayBypassLocal) {
         const QString gatewayHostname = entries.value(QStringLiteral("gatewayhostname"));
         QString gatewayHost;
         int gatewayPort;
@@ -208,11 +218,16 @@ bool RdpViewFactory::importFileSettings(const QHash<QString, QString> &entries, 
         return false;
     }
 
+    // Any file can name any host, so a file must not change a host the user already has settings for.
+    if (configGroup.exists()) {
+        return true;
+    }
+
     RdpHostPreferences preferences(configGroup);
 
     // Sharing local folders, smart cards or other devices, and the security settings, are left out on
     // purpose: a file sent by an attacker could use them to expose this computer to the server it names.
-    if (!gatewayAddress.isEmpty()) {
+    if (gatewayUsage == GatewayAlways) {
         preferences.setUseGateway(true);
         preferences.setGatewayServer(gatewayAddress);
         // Empty for this host, so that this gateway does not get the credentials of the default one.
@@ -260,9 +275,85 @@ bool RdpViewFactory::importFileSettings(const QHash<QString, QString> &entries, 
     return true;
 }
 
+ConnectionLaunch RdpViewFactory::loadLaunchFromFile(const QUrl &url, QString *errorMessage) const
+{
+    ConnectionLaunch launch = rdpLaunchFromFile(url, errorMessage);
+    if (launch.isValid()) {
+        const auto profile = std::static_pointer_cast<const RdpLaunchProfile>(launch.payload);
+        const QByteArray contents = profile->contents();
+        QTextStream in(contents);
+        launch.fromFile = true;
+        launch.fileSettings = readRdpEntries(in);
+        launch.fileSettings.remove(QStringLiteral("password"));
+        // FreeRDP reads integers more loosely than KRDC, so importFileSettings() is given the gateway FreeRDP will use.
+        launch.fileSettings.insert(QStringLiteral("gatewayusagemethod"), QString::number(profile->gatewayUsageMethod()));
+        launch.fileSettings.insert(QStringLiteral("gatewayhostname"), profile->gatewayAddress());
+    }
+    return launch;
+}
+
 RemoteView *RdpViewFactory::createView(QWidget *parent, const QUrl &url, KConfigGroup configGroup)
 {
     return new RdpView(parent, url, configGroup);
+}
+
+RemoteView *RdpViewFactory::createViewForLaunch(QWidget *parent, const ConnectionLaunch &launch, KConfigGroup configGroup)
+{
+    // kind() rather than RTTI: typeinfo is not shared across module boundaries with hidden visibility.
+    std::shared_ptr<const RdpLaunchProfile> profile;
+    if (launch.payload && launch.payload->kind() == RdpLaunchProfile::payloadKind()) {
+        profile = std::static_pointer_cast<const RdpLaunchProfile>(launch.payload);
+    }
+    return new RdpView(parent, launch.url, configGroup, QString(), QString(), QString(), profile);
+}
+
+QList<QAction *> RdpViewFactory::createActions(QWidget *parentWindow)
+{
+    auto *workspaces = new QAction(QIcon::fromTheme(QStringLiteral("cloud")), i18nc("@action", "Azure Virtual Desktop Workspaces…"), parentWindow);
+    workspaces->setObjectName(QStringLiteral("rdp_avd_workspaces"));
+    connect(workspaces, &QAction::triggered, this, [this, parentWindow]() {
+        showWorkspaces(parentWindow);
+    });
+    return {workspaces};
+}
+
+void RdpViewFactory::showWorkspaces(QWidget *parentWindow)
+{
+    if (m_workspaceDialog) {
+        // Brought forward as it is; reopening it would also restart its sign-in.
+        m_workspaceDialog->show();
+        m_workspaceDialog->raise();
+        m_workspaceDialog->activateWindow();
+        return;
+    }
+    if (!m_network) {
+        m_network = new QNetworkAccessManager(this);
+        m_tokenStore = std::make_unique<Avd::KeychainTokenStore>(Avd::publicCloud().authorityHost);
+        // Private (0700/0600) metadata only; see Avd::WorkspaceCache.
+        m_workspaceCache =
+            std::make_unique<Avd::WorkspaceCache>(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/avd-workspaces"));
+    }
+
+    auto *dialog = new AvdWorkspaceDialog(m_network, m_tokenStore.get(), Avd::publicCloud(), parentWindow, m_workspaceCache.get());
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    m_workspaceDialog = dialog;
+
+    // The account name is not secret; the refresh token is in the keychain.
+    KConfigGroup group = KSharedConfig::openConfig()->group(QStringLiteral("AzureVirtualDesktop"));
+    dialog->setAccount(group.readEntry("Account", QString()));
+    connect(dialog, &AvdWorkspaceDialog::accountChanged, this, [](const QString &account) {
+        KConfigGroup group = KSharedConfig::openConfig()->group(QStringLiteral("AzureVirtualDesktop"));
+        if (account.isEmpty()) {
+            group.deleteEntry("Account");
+        } else {
+            group.writeEntry("Account", account);
+        }
+        group.sync();
+    });
+    connect(dialog, &AvdWorkspaceDialog::launchRequested, this, &RemoteViewFactory::launchRequested);
+
+    dialog->show();
+    dialog->start();
 }
 
 HostPreferences *RdpViewFactory::createHostPreferences(KConfigGroup configGroup, QWidget *parent)

@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE gui SYSTEM "kpartgui.dtd">
-<gui name="krdc" version="10">
+<gui name="krdc" version="11">
 <MenuBar>
     <Menu name="file">
         <Action name="new_connection" />
+        <ActionList name="plugin_actions" />
     </Menu>
     <Menu noMerge="1" name="session"><text>&amp;Session</text>
         <Action name="switch_fullscreen" />

@@ -11,6 +11,7 @@
 
 #include <QHash>
 #include <QImage>
+#include <QMutex>
 #include <QObject>
 #include <QRect>
 #include <QSize>
@@ -20,6 +21,13 @@
 #include <freerdp/client/disp.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/version.h>
+
+#include "rdpaccesstoken.h"
+#include "rdpcredentials.h"
+#include "rdplaunchprofile.h"
+#include "rdpuihandoff.h"
+
+#include <optional>
 
 class RdpClipboard;
 class RdpDisplay;
@@ -102,6 +110,13 @@ public:
     RdpHostPreferences *preferences() const;
     void setHostPreferences(RdpHostPreferences *preferences);
 
+    /** Settings from a connection file, applied instead of the host's connection settings. */
+    void setLaunchProfile(std::shared_ptr<const RdpLaunchProfile> profile);
+    /** Why the connection file could not be used, if starting failed for that. */
+    QString launchError() const;
+    /** Why the last Microsoft Entra sign-in failed; empty if it did not fail or was canceled. */
+    QString accessTokenError() const;
+
     QSize size() const;
     void setSize(QSize size);
     Q_SIGNAL void sizeChanged();
@@ -131,7 +146,8 @@ public:
     Q_SIGNAL void rectangleUpdated(const QRect &rectangle, const QSize &size);
 
     Q_SIGNAL void errorMessage(unsigned int error);
-    Q_SIGNAL void onAuthRequested();
+    Q_SIGNAL void credentialsRequested(const RdpCredentialRouter::Prompt &prompt, RdpCredentialRouter::Credentials *answer, bool *accepted);
+    Q_SIGNAL void signInRequested(const RdpAccessTokenBroker::SignInRequest &request, std::optional<Avd::AuthorizationCallback> *callback);
     Q_SIGNAL void onVerifyCertificate(RdpSession::CertificateResult *ret, const QString &certificate);
     Q_SIGNAL void onVerifyChangedCertificate(RdpSession::CertificateResult *ret, const QString &oldCertificate, const QString &newCertificate);
     Q_SIGNAL void onLogonError(const QString &error);
@@ -154,6 +170,7 @@ public:
     static void postFinalDisconnect(freerdp *);
 
     static BOOL authenticateEx(freerdp *instance, char **username, char **password, char **domain, rdp_auth_reason reason);
+    static BOOL getAccessToken(freerdp *instance, AccessTokenType tokenType, char **token, size_t count, ...);
     static DWORD verifyCertificateEx(freerdp *, const char *, UINT16 port, const char *, const char *, const char *, const char *, DWORD);
     static DWORD verifyChangedCertificateEx(freerdp *,
                                             const char *,
@@ -196,7 +213,8 @@ public:
 private:
     void setState(State newState);
 
-    bool onAuthenticate(char **username, char **password, char **domain);
+    bool onAuthenticate(rdp_auth_reason reason, char **username, char **password, char **domain);
+    void setAccessTokenError(const QString &error);
 
     void run();
 
@@ -226,7 +244,6 @@ private:
     QString m_host;
     int m_port = -1;
     QSize m_size;
-    bool m_firstPasswordTry;
     bool m_needKeyStateSync = true;
 
     std::thread m_thread;
@@ -235,6 +252,14 @@ private:
     std::atomic_bool m_errorEmitted = false;
 
     RdpHostPreferences *m_preferences;
+    std::shared_ptr<const RdpLaunchProfile> m_launchProfile;
+    QString m_launchError;
+    RdpCredentialRouter m_credentials;
+    std::unique_ptr<RdpAccessTokenBroker> m_tokenBroker;
+    // Questions from FreeRDP's thread; canceled by stop() so it can be joined.
+    RdpUiHandoff m_uiHandoff;
+    mutable QMutex m_accessTokenErrorMutex;
+    QString m_accessTokenError;
     QVector<MonitorGeometry> m_monitors;
     QHash<QString, qreal> m_outputScaleFactors;
 };

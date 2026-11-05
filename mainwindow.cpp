@@ -102,7 +102,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     createDockWidget();
 
+    QList<QAction *> pluginActions;
+    for (RemoteViewFactory *factory : std::as_const(m_remoteViewFactories)) {
+        connect(factory, &RemoteViewFactory::launchRequested, this, [this](const ConnectionLaunch &launch) {
+            newConnectionFromLaunch(launch);
+        });
+        const QList<QAction *> actions = factory->createActions(this);
+        for (QAction *action : actions) {
+            actionCollection()->addAction(action->objectName(), action);
+            pluginActions << action;
+        }
+    }
+
     setupGUI(ToolBar | Keys | Save | Create);
+    plugActionList(QStringLiteral("plugin_actions"), pluginActions);
 
     connect(m_tabWidget, &QTabWidget::currentChanged, this, &MainWindow::tabChanged);
 
@@ -211,7 +224,7 @@ void MainWindow::setupActions()
 
 void MainWindow::loadAllPlugins()
 {
-    const QVector<KPluginMetaData> offers = KPluginMetaData::findPlugins(QStringLiteral("krdc"));
+    const QVector<KPluginMetaData> offers = RemoteViewFactory::compatiblePlugins();
     const KConfigGroup conf = KSharedConfig::openConfig()->group(QStringLiteral("Plugins"));
 
     for (const KPluginMetaData &plugin : offers) {
@@ -257,6 +270,48 @@ QUrl MainWindow::getInputUrl()
 
 void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConnected, const QString &tabName)
 {
+    QUrl url = newUrl.isEmpty() ? getInputUrl() : newUrl;
+    ConnectionLaunch launch = ConnectionLaunch::fromUrl(url);
+
+    if (url.isLocalFile()) {
+        QString reason;
+        ConnectionLaunch loaded;
+        for (RemoteViewFactory *factory : std::as_const(m_remoteViewFactories)) {
+            QString factoryReason;
+            loaded = factory->loadLaunchFromFile(url, &factoryReason);
+            if (loaded.isValid()) {
+                qCDebug(KRDC) << "Loaded file (" << url.path() << ") resulted in url (" << loaded.url << ") using " << factory->metaObject()->className();
+                break;
+            }
+            if (reason.isEmpty()) {
+                reason = factoryReason;
+            }
+        }
+        if (!loaded.isValid()) {
+            KMessageBox::error(
+                this,
+                reason.isEmpty()
+                    ? i18n("Unable to load connection data from “%1”.\nThe file may be damaged, or it is in a format KRDC does not support.", url.toLocalFile())
+                    : i18n("Unable to load connection data from “%1”.\n%2", url.toLocalFile(), reason),
+                i18n("Load failed"));
+            return;
+        }
+        launch = loaded;
+    }
+
+    openLaunch(launch,
+               switchFullscreenWhenConnected,
+               tabName.isEmpty() ? launch.name : tabName,
+               newUrl.isEmpty() && m_addressInput ? m_addressInput->text() : QString());
+}
+
+void MainWindow::newConnectionFromLaunch(const ConnectionLaunch &launch, bool switchFullscreenWhenConnected, const QString &tabName)
+{
+    openLaunch(launch, switchFullscreenWhenConnected, tabName.isEmpty() ? launch.name : tabName, QString());
+}
+
+void MainWindow::openLaunch(const ConnectionLaunch &launch, bool switchFullscreenWhenConnected, const QString &tabName, const QString &enteredAddress)
+{
     m_switchFullscreenWhenConnected = switchFullscreenWhenConnected;
 
     // Bring the main window to the front when a connection is initiated from
@@ -269,32 +324,12 @@ void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConn
         activateWindow();
     }
 
-    QUrl url = newUrl.isEmpty() ? getInputUrl() : newUrl;
-    RemoteViewFactory::ConnectionFile connectionFile;
-
-    if (url.isLocalFile()) {
-        for (RemoteViewFactory *factory : std::as_const(m_remoteViewFactories)) {
-            connectionFile = factory->loadConnectionFile(url);
-            if (connectionFile.url.isValid()) {
-                qCDebug(KRDC) << "Loaded file (" << url.path() << ") resulted in url (" << connectionFile.url << ") using " << factory->metaObject()->className();
-                break;
-            }
-        }
-        if (connectionFile.url.isValid()) {
-            url = connectionFile.url;
-        } else {
-            KMessageBox::error(
-                this,
-                i18n("Unable to load connection data from “%1”.\nThe file may be damaged, or it is in a format KRDC does not support.", url.toLocalFile()),
-                i18n("Load failed"));
-            return;
-        }
-    }
+    const QUrl url = launch.url;
 
     if (!url.isValid() || (url.host().isEmpty() && url.port() < 0) || (!url.path().isEmpty() && url.path() != QStringLiteral("/"))) {
         KMessageBox::error(this,
                            i18n("“%1” is not a valid address.\n\nUse the form [username@]host[:port], for example: user@192.168.1.10:5900",
-                                newUrl.isEmpty() ? m_addressInput->text() : url.toDisplayString()),
+                                enteredAddress.isEmpty() ? url.toDisplayString() : enteredAddress),
                            i18n("Malformed URL"));
         if (m_addressInput) {
             m_addressInput->setFocus();
@@ -308,14 +343,13 @@ void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConn
     RemoteView *view = nullptr;
     KConfigGroup configGroup = Settings::self()->config()->group(QStringLiteral("hostpreferences")).group(url.toDisplayString(QUrl::StripTrailingSlash));
 
-    const bool fromFile = connectionFile.url.isValid();
-    const bool newHostFromFile = fromFile && !configGroup.exists();
+    const bool newHostFromFile = launch.fromFile && !configGroup.exists();
 
     if (RemoteViewFactory *factory = factoryFor(url)) {
-        if (fromFile && !factory->importFileSettings(connectionFile.settings, configGroup, this)) {
+        if (launch.fromFile && !factory->importFileSettings(launch.fileSettings, configGroup, this)) {
             return;
         }
-        view = factory->createView(this, url, configGroup);
+        view = factory->createViewForLaunch(this, launch, configGroup);
         qCDebug(KRDC) << "Found plugin to handle url (" << url.toDisplayString() << "): " << view->metaObject()->className();
     }
 
@@ -328,6 +362,13 @@ void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConn
                            i18n("No installed plugin can handle the “%1” protocol.\nSupported protocols: %2", url.scheme(), schemes.join(QStringLiteral(", "))),
                            i18n("Unusable URL"));
         return;
+    }
+
+    if (!launch.remember) {
+        m_unrememberedLaunches.insert(view, launch);
+        connect(view, &QObject::destroyed, this, [this, view]() {
+            m_unrememberedLaunches.remove(view);
+        });
     }
 
     // Configure the view
@@ -344,7 +385,7 @@ void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConn
     // The settings dialog may have named the connection; only its history entry follows, the
     // user's own bookmarks keep their names.
     const QString name = prefs->connectionName();
-    if (name != tabName) {
+    if (name != tabName && launch.remember) {
         m_bookmarkManager->renameHistoryBookmark(url, name);
     }
 
@@ -413,17 +454,17 @@ void MainWindow::newConnection(const QUrl &newUrl, bool switchFullscreenWhenConn
             closeTab(m_tabWidget->indexOf(scrollArea));
         }
     });
-    connect(statusWidget, &ConnectionStatusWidget::retryRequested, this, [this, scrollArea, url]() {
-        reconnectInTab(scrollArea, url);
+    connect(statusWidget, &ConnectionStatusWidget::retryRequested, this, [this, scrollArea, launch]() {
+        reconnectInTab(scrollArea, launch);
     });
     connect(statusWidget, &ConnectionStatusWidget::editAddressRequested, this, [this, scrollArea, url]() {
         closeTab(m_tabWidget->indexOf(scrollArea));
         setAddressInput(url);
         newConnectionPage(false);
     });
-    connect(statusWidget, &ConnectionStatusWidget::editSettingsRequested, this, [this, scrollArea, url]() {
-        if (editHostSettings(url)) {
-            reconnectInTab(scrollArea, url);
+    connect(statusWidget, &ConnectionStatusWidget::editSettingsRequested, this, [this, scrollArea, launch]() {
+        if (editHostSettings(launch.url)) {
+            reconnectInTab(scrollArea, launch);
         }
     });
     connect(statusWidget, &ConnectionStatusWidget::closeRequested, this, [this, scrollArea]() {
@@ -582,7 +623,7 @@ void MainWindow::statusChanged(RemoteView::RemoteStatus status)
             }
         }
 
-        if (Settings::rememberHistory()) {
+        if (Settings::rememberHistory() && isRemembered(view)) {
             m_bookmarkManager->addHistoryBookmark(view, connectionName(m_remoteViewMap.key(view), view->url()));
         }
 
@@ -1295,6 +1336,9 @@ void MainWindow::quit(bool systemEvent)
         if (Settings::rememberSessions()) { // remember open remote views for next startup
             QStringList list;
             for (RemoteView *view : std::as_const(m_remoteViewMap)) {
+                if (!isRemembered(view)) {
+                    continue;
+                }
                 qCDebug(KRDC) << view->url();
                 list.append(view->url().toDisplayString(QUrl::StripTrailingSlash));
             }
@@ -1641,14 +1685,19 @@ ConnectionError MainWindow::unexplainedDisconnect(const ConnectionStatusWidget *
     return error;
 }
 
-void MainWindow::reconnectInTab(QWidget *tab, const QUrl &url)
+bool MainWindow::isRemembered(RemoteView *view) const
+{
+    return !m_unrememberedLaunches.contains(view);
+}
+
+void MainWindow::reconnectInTab(QWidget *tab, const ConnectionLaunch &launch)
 {
     const int index = m_tabWidget->indexOf(tab);
-    if (index < 0 || !url.isValid()) {
+    if (index < 0 || !launch.isValid()) {
         return;
     }
 
-    const QString tabName = connectionName(tab, url);
+    const QString tabName = connectionName(tab, launch.url);
 
     if (RemoteView *view = m_remoteViewMap.take(tab)) {
         m_savedGrabStatesBeforeFullscreen.remove(view);
@@ -1656,7 +1705,7 @@ void MainWindow::reconnectInTab(QWidget *tab, const QUrl &url)
     }
 
     m_insertTabIndex = index;
-    newConnection(url, false, tabName);
+    openLaunch(launch, false, tabName, QString());
     m_insertTabIndex = -1;
 
     // Keep the error tab if the new connection was not opened, e.g. its settings dialog was canceled.

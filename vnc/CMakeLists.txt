@@ -1,4 +1,4 @@
-add_library(krdc_vncplugin MODULE)
+krdc_add_plugin(krdc_vncplugin)
 
 target_sources(krdc_vncplugin PRIVATE
     vnchostpreferences.cpp
@@ -32,7 +32,7 @@ if(HAIKU)
     target_link_libraries(krdc_vncplugin network)
 endif()
 
-add_library(kcm_krdc_vncplugin)
+krdc_add_kcm(kcm_krdc_vncplugin)
 
 target_sources(kcm_krdc_vncplugin PRIVATE
     vncpreferences.cpp
@@ -51,4 +51,3 @@ target_link_libraries(kcm_krdc_vncplugin
 add_dependencies(kcm_krdc_vncplugin krdc_vncplugin)
 
 install(TARGETS kcm_krdc_vncplugin DESTINATION ${KDE_INSTALL_PLUGINDIR}/krdc/kcms)
-install(TARGETS krdc_vncplugin DESTINATION ${KDE_INSTALL_PLUGINDIR}/krdc)

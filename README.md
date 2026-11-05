@@ -90,3 +90,7 @@ For more information, please review each license file in the repository.
 - [KRDC Project Page](https://invent.kde.org/network/krdc)
 - [KDE Community Forum](https://forum.kde.org/)
 - [KDE Bug Tracker](https://bugs.kde.org/)
+
+## Azure Virtual Desktop and .rdp files (experimental)
+
+See [doc/azure-virtual-desktop.md](doc/azure-virtual-desktop.md) for importing `.rdp` files, Microsoft Entra sign-in, the AVD workspace list, limitations and the offline tests.

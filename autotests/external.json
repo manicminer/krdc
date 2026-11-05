@@ -1,0 +1,9 @@
+{
+    "KPlugin": {
+        "Description": "Compatible plugin from outside this build",
+        "EnabledByDefault": true,
+        "Name": "External"
+    },
+    "X-KDE-KRDC-PluginVersion": 2,
+    "X-KDE-KRDC-Sorting": 90
+}

@@ -723,11 +723,15 @@ user name <literal>alice@example.org</literal>.</para>
 <para>&krdc; can read basic connection details from an <filename>.rdp</filename>
 file passed on the command line:</para>
 <screen><userinput><command>krdc</command> connection.rdp</userinput></screen>
-<para>This reads the server address, user name, domain, and a password field
-if present. For a host that has no saved settings, it also reads the display
-size, scaling and sound settings, whether to turn off clipboard sharing, and a
-gateway that is always used, which &krdc; asks you to accept first. Settings
-already saved for the host are kept. For safety, &krdc; does not import shared
+<para>&krdc; reads the file with FreeRDP's parser and uses its connection
+settings for that connection. The user name is only a suggestion for the login
+dialog. A plain-text password field is used for that connection only; it is
+never added to the address, history or bookmarks, and never saved. Before
+connecting through a gateway named in the file, &krdc; asks you to accept it,
+even for a host with saved settings. For a host that has no saved settings, it
+also saves the display size, scaling and sound settings, whether to turn off
+clipboard sharing, and a gateway that is always used. Settings already saved
+for the host are kept. For safety, &krdc; does not import shared
 folders, shared devices, or security settings from the file. Use the host
 configuration dialog for other options. Run
 <userinput><command>krdc</command> <option>--help</option></userinput> for

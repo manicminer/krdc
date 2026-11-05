@@ -11,9 +11,11 @@ target_sources(krdccore PRIVATE
     remoteview.cpp
     hostpreferences.cpp
     connectionerror.cpp
+    connectionlaunch.cpp
 )
 
 kconfig_add_kcfg_files(krdccore settings.kcfgc)
+target_compile_definitions(krdccore PRIVATE KRDC_RELATIVE_PLUGINDIR="${KRDC_RELATIVE_PLUGINDIR}")
 
 ecm_qt_declare_logging_category(krdccore
     HEADER krdc_debug.h
@@ -64,12 +66,17 @@ endif()
 
 install(TARGETS krdccore ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
 
+if(BUILD_TESTING)
+    add_subdirectory(autotests)
+endif()
+
 # Install headers
 set(krdccore_HDRS
     remoteviewfactory.h
     remoteview.h
     hostpreferences.h
     connectionerror.h
+    connectionlaunch.h
 )
 
 install(FILES ${krdccore_HDRS} DESTINATION ${KDE_INSTALL_INCLUDEDIR}/krdc COMPONENT Devel)

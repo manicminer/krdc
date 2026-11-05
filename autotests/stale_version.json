@@ -1,0 +1,9 @@
+{
+    "KPlugin": {
+        "Description": "Plugin built for another KRDC plugin version",
+        "EnabledByDefault": true,
+        "Name": "Stale version"
+    },
+    "X-KDE-KRDC-PluginVersion": 1,
+    "X-KDE-KRDC-Sorting": 70
+}

@@ -31,17 +31,35 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include "avd/avdsignindialog.h"
 #include "rdpmonitorview.h"
 
-RdpView::RdpView(QWidget *parent, const QUrl &url, KConfigGroup configGroup, const QString &user, const QString &domain, const QString &password)
+RdpView::RdpView(QWidget *parent,
+                 const QUrl &url,
+                 KConfigGroup configGroup,
+                 const QString &user,
+                 const QString &domain,
+                 const QString &password,
+                 std::shared_ptr<const RdpLaunchProfile> launch)
     : RemoteView(parent)
     , m_user(user)
     , m_domain(domain)
     , m_password(password)
+    , m_launch(std::move(launch))
 {
     m_url = url;
     m_host = url.host();
     m_port = url.port();
+
+    if (m_launch) {
+        // Suggestions from the file; the user can change them when asked.
+        if (m_user.isEmpty()) {
+            m_user = m_launch->username();
+        }
+        if (m_domain.isEmpty()) {
+            m_domain = m_launch->domain();
+        }
+    }
 
     if (m_user.isEmpty() && !m_url.userName().isEmpty()) {
         m_user = m_url.userName();
@@ -130,6 +148,10 @@ void RdpView::startQuittingConnection()
 
     destroyMonitorWindows();
 
+    if (m_authPrompt) {
+        m_authPrompt->reject();
+    }
+
     if (m_session) {
         m_session->stop();
     }
@@ -153,9 +175,12 @@ bool RdpView::startConnection()
     m_session->setUser(m_user);
     m_session->setDomain(m_domain);
 
+    m_session->setLaunchProfile(m_launch);
+
     m_session->setSize(initialSize());
 
-    if (m_password.isEmpty()) {
+    // A password kept for this address may belong to another account than a file suggests.
+    if (m_password.isEmpty() && !m_launch) {
         m_session->setPassword(readWalletPassword());
     } else {
         m_session->setPassword(m_password);
@@ -207,7 +232,9 @@ bool RdpView::startConnection()
     });
     connect(m_session.get(), &RdpSession::errorMessage, this, &RdpView::handleError);
     connect(m_session.get(), &RdpSession::onLogonError, this, &RdpView::onLogonError);
-    connect(m_session.get(), &RdpSession::onAuthRequested, this, &RdpView::onAuthRequested, Qt::BlockingQueuedConnection);
+    // Emitted on this thread through the session's cancellable handoff.
+    connect(m_session.get(), &RdpSession::credentialsRequested, this, &RdpView::onCredentialsRequested);
+    connect(m_session.get(), &RdpSession::signInRequested, this, &RdpView::onSignInRequested);
     connect(m_session.get(), &RdpSession::onVerifyCertificate, this, &RdpView::onVerifyCertificate, Qt::BlockingQueuedConnection);
     connect(m_session.get(), &RdpSession::onVerifyChangedCertificate, this, &RdpView::onVerifyChangedCertificate, Qt::BlockingQueuedConnection);
 
@@ -215,6 +242,9 @@ bool RdpView::startConnection()
 
     setStatus(RdpView::Connecting);
     if (!m_session->start()) {
+        if (!m_session->launchError().isEmpty()) {
+            reportError(ConnectionError::create(ConnectionError::Stage::Session, m_session->launchError()));
+        }
         Q_EMIT disconnected();
         return false;
     }
@@ -224,27 +254,94 @@ bool RdpView::startConnection()
     return true;
 }
 
-void RdpView::onAuthRequested()
+void RdpView::onCredentialsRequested(const RdpCredentialRouter::Prompt &prompt, RdpCredentialRouter::Credentials *answer, bool *accepted)
 {
-    std::unique_ptr<KPasswordDialog> dialog;
-    dialog =
-        std::make_unique<KPasswordDialog>(nullptr, KPasswordDialog::ShowUsernameLine | KPasswordDialog::ShowKeepPassword | KPasswordDialog::ShowDomainLine);
-    // Without its own user name, the gateway uses this login too.
-    const bool sharedWithGateway = m_hostPreferences->useGateway() && m_hostPreferences->gatewayUsername().isEmpty();
-    dialog->setPrompt(sharedWithGateway ? i18nc("@label", "Access to the gateway and this system requires a username and password.")
-                                        : i18nc("@label", "Access to this system requires a username and password."));
-    dialog->setUsername(m_user);
-    dialog->setDomain(m_domain);
-    dialog->setPassword(m_password);
+    using Target = RdpCredentialRouter::Target;
+    *accepted = false;
+    if (m_quitting) {
+        return;
+    }
 
-    if (!dialog->exec()) {
+    KPasswordDialog::KPasswordDialogFlags flags;
+    if (prompt.showUsername) {
+        flags |= KPasswordDialog::ShowUsernameLine;
+    }
+    if (prompt.showDomain) {
+        flags |= KPasswordDialog::ShowDomainLine;
+    }
+    // Passwords are kept per address, which is all a launch from a file has in common with later ones.
+    if (prompt.target == Target::Host && !m_launch) {
+        flags |= KPasswordDialog::ShowKeepPassword;
+    }
+    auto dialog = std::make_unique<KPasswordDialog>(nullptr, flags);
+
+    QString text;
+    switch (prompt.target) {
+    case Target::Host: {
+        // Without its own user name, the gateway uses this login too.
+        const bool sharedWithGateway = !m_launch && m_hostPreferences->useGateway() && m_hostPreferences->gatewayUsername().isEmpty();
+        text = sharedWithGateway ? i18nc("@label", "Access to the gateway and this system requires a username and password.")
+                                 : i18nc("@label", "Access to this system requires a username and password.");
+        if (prompt.entraExpected) {
+            text += QStringLiteral("\n\n")
+                + i18nc("@label",
+                        "This connection is set up for signing in with Microsoft Entra ID, but the remote computer asked for a password. "
+                        "Its policy may require a different way to log on; ask its administrator if your password is not accepted.");
+        }
+        break;
+    }
+    case Target::Gateway: {
+        const QString gateway = m_launch ? m_launch->gatewayHost() : QUrl::fromUserInput(m_hostPreferences->gatewayServer()).host();
+        text = gateway.isEmpty() ? i18nc("@label", "The gateway requires a username and password.")
+                                 : i18nc("@label", "The gateway “%1” requires a username and password.", gateway);
+        break;
+    }
+    case Target::SmartcardPin:
+        text = i18nc("@label", "Enter the PIN of your smart card.");
+        break;
+    case Target::Unsupported:
+        return;
+    }
+    dialog->setPrompt(text);
+    if (prompt.showUsername) {
+        dialog->setUsername(prompt.username);
+    }
+    if (prompt.showDomain) {
+        dialog->setDomain(prompt.domain);
+    }
+    if (prompt.target == Target::Host) {
+        dialog->setPassword(m_password);
+    }
+
+    // The view may be closed while the dialog is open.
+    QPointer<RdpView> self(this);
+    m_authPrompt = dialog.get();
+    const bool ok = dialog->exec() == QDialog::Accepted;
+    if (!self) {
+        return;
+    }
+    m_authPrompt.clear();
+    if (!ok || m_quitting) {
         setCanceledByUser();
         return;
     }
 
-    m_user = dialog->username();
-    m_domain = dialog->domain();
-    m_password = dialog->password();
+    answer->username = dialog->username();
+    answer->domain = dialog->domain();
+    answer->password = dialog->password();
+    *accepted = true;
+
+    if (prompt.target != Target::Host) {
+        return;
+    }
+
+    m_user = answer->username;
+    m_domain = answer->domain;
+    m_password = answer->password;
+
+    if (m_launch) {
+        return;
+    }
 
     // update m_url so it gets saved correctly
     // A null username removes the user info; an empty one leaves an '@' in the URL.
@@ -265,10 +362,30 @@ void RdpView::onAuthRequested()
     if (dialog->keepPassword()) {
         savePassword(m_password);
     }
+}
 
-    m_session->setUser(m_user);
-    m_session->setDomain(m_domain);
-    m_session->setPassword(m_password);
+void RdpView::onSignInRequested(const RdpAccessTokenBroker::SignInRequest &request, std::optional<Avd::AuthorizationCallback> *callback)
+{
+    const QString purpose = request.kind == RdpAccessTokenBroker::Kind::AvdGateway
+        ? i18nc("@info", "Sign in to the Azure Virtual Desktop gateway for “%1”.", m_host)
+        : i18nc("@info", "Sign in to the remote computer “%1” with Microsoft Entra ID.", m_host);
+    *callback = std::nullopt;
+    if (m_quitting) {
+        return;
+    }
+    AvdSignInDialog dialog({request.authorizeUrl, request.redirectUri, request.state, purpose});
+    QPointer<RdpView> self(this);
+    m_authPrompt = &dialog;
+    const bool ok = dialog.exec() == QDialog::Accepted;
+    if (!self) {
+        return;
+    }
+    m_authPrompt.clear();
+    if (!ok || m_quitting) {
+        setCanceledByUser();
+        return;
+    }
+    *callback = dialog.callback();
 }
 
 void RdpView::onVerifyCertificate(RdpSession::CertificateResult *ret, const QString &certificate)
@@ -346,6 +463,19 @@ void RdpView::handleError(const unsigned int error)
                                 .arg(error, 8, 16, QLatin1Char('0'))
                                 .arg(QString::fromUtf8(freerdp_get_last_error_string(error)));
     ConnectionError report;
+
+    const QString signInError = m_session ? m_session->accessTokenError() : QString();
+    if (!signInError.isEmpty()) {
+        report = ConnectionError::create(Stage::Authentication, signInError, details);
+        report.title = i18nc("@title connection error", "Microsoft Entra sign-in failed");
+        report.steps = {
+            i18nc("@info", "If your organization only allows managed or compliant devices, its policy may not allow this client. Ask its administrator."),
+            i18nc("@info",
+                  "Installing a FreeRDP sign-in helper (freerdp-xdg-aad-helper or freerdp-qt-aad-helper) lets KRDC sign in without copying addresses."),
+        };
+        reportError(report);
+        return;
+    }
 
     switch (error) {
     case FREERDP_ERROR_AUTHENTICATION_FAILED:
