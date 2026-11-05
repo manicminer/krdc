@@ -56,6 +56,7 @@
             "builddir": true,
             "config-opts": [
                 "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_LIBDIR:PATH=lib",
                 "-DWITH_DEBUG_CALLTRACE:BOOL=OFF",
                 "-DWITH_EXAMPLES:BOOL=OFF",
                 "-DWITH_SERVER:BOOL=OFF"
@@ -74,6 +75,7 @@
             "builddir": true,
             "config-opts": [
                 "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_LIBDIR:PATH=lib",
                 "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
                 "-DWITH_EXAMPLES:BOOL=OFF",
                 "-DWITH_GTK:BOOL=OFF",
@@ -138,6 +140,7 @@
             "builddir": true,
             "config-opts": [
                 "-DCMAKE_BUILD_TYPE=Release",
+                "-DCMAKE_INSTALL_LIBDIR:PATH=lib",
                 "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
                 "-DENABLE_CJSON_TEST=OFF",
                 "-DENABLE_CJSON_UTILS=OFF",
