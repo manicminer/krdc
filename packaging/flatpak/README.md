@@ -47,11 +47,17 @@ A `.flatpak` bundle is attached to each GitHub Release (`flatpak install --user 
 ## Local build and tests
 
 ```sh
-export FLATPAK_USER_DIR=/path/to/scratch   # optional: a separate per-user installation
 flatpak --user install flathub org.flatpak.Builder org.kde.Sdk//6.11 org.kde.Platform//6.11
-packaging/flatpak/build.sh --source . --out /tmp/krdc-flatpak --run-tests
-FLATPAK_USER_DIR=/path/to/scratch packaging/flatpak/test-sandbox-callback.sh --repo /tmp/krdc-flatpak/repo --source .
+dbus-run-session -- packaging/flatpak/build.sh --source . --out /tmp/krdc-flatpak --run-tests
+packaging/flatpak/test-sandbox-callback.sh --repo /tmp/krdc-flatpak/repo --source .
 ```
+
+`build.sh` always uses org.flatpak.Builder from the default per-user installation, the same as CI
+(CI does not use Ubuntu's flatpak-builder package, whose flatpak-builder and AppStream are older).
+For a separate installation, point HOME at a private directory instead of setting FLATPAK_USER_DIR.
+`out/BUILDER.json` records the Builder's ref, commit and versions. When a build fails,
+`out/diagnostics/` gets an inventory of the build tree, its metadata files and a full
+`appstreamcli compose` report, and CI uploads it as the `flatpak-build-diagnostics-x86_64` artifact.
 
 `test-sandbox-callback.sh` re-runs itself with a scrubbed environment, private HOME, runtime
 directory and `dbus-run-session`, and no display: nothing reaches the desktop session. Run builds

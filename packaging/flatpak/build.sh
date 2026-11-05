@@ -15,9 +15,14 @@
 #
 # Output in --out: repo/ (unsigned archive-z2 repo), repo.tar, SOURCE.json and, with
 # --bundle-gpg-key, io.github.manicminer.krdc-<arch>.flatpak (update origin: the manicminer remote).
+# BUILDER.json records the org.flatpak.Builder used. If the build fails, diagnostics/ gets the
+# builder provenance, an inventory of the build tree, its metadata files and a full AppStream report.
 #
-# Builder: flatpak-builder if on PATH, else the org.flatpak.Builder Flatpak. The org.kde.Sdk and
-# org.kde.Platform of the manifest must be installed (see ci-install-deps.sh).
+# Builder: always the org.flatpak.Builder Flatpak from Flathub, in the default per-user installation,
+# run through its own wrapper, like CI. Distribution flatpak-builder packages are not used: they bring
+# a different flatpak-builder and AppStream. Run it in a private D-Bus session (dbus-run-session): the
+# Builder reaches the host flatpak through that bus. The org.kde.Sdk and org.kde.Platform of the
+# manifest must be installed in the same installation (see ci-install-deps.sh).
 set -euo pipefail
 umask 022
 
@@ -74,7 +79,7 @@ fi
 mkdir -p "$out_dir"
 out_dir="$(cd "$out_dir" && pwd -P)"
 work="$out_dir/work"
-rm -rf "$work" "$out_dir/repo" "$out_dir/repo.tar" "$out_dir/SOURCE.json" "$out_dir"/*.flatpak
+rm -rf "$work" "$out_dir/repo" "$out_dir/repo.tar" "$out_dir/SOURCE.json" "$out_dir/BUILDER.json" "$out_dir/diagnostics" "$out_dir"/*.flatpak
 mkdir -p "$work"
 state_dir="${state_dir:-$out_dir/.flatpak-builder}"
 
@@ -113,26 +118,57 @@ python3 -I "$here/render-manifest.py" --manifest-dir "$work" \
     --version "$version" --date "$source_date" --run-tests "$run_tests" \
     ${staged_patches[@]+"${staged_patches[@]}"} > "$manifest"
 
-builder=()
-if command -v flatpak-builder >/dev/null 2>&1; then
-    builder=(flatpak-builder)
-else
-    flatpak info org.flatpak.Builder >/dev/null 2>&1 || die "neither flatpak-builder nor org.flatpak.Builder is installed"
-    builder=(flatpak run --filesystem="$out_dir" --filesystem="$state_dir")
-    if [[ -n "${FLATPAK_USER_DIR:-}" ]]; then
-        builder+=(--env=FLATPAK_USER_DIR="$FLATPAK_USER_DIR" --filesystem="$FLATPAK_USER_DIR")
-    fi
-    # Not the default wrapper: it forces the default per-user installation and the host flatpak binary.
-    builder+=(--command=flatpak-builder org.flatpak.Builder)
-fi
-mkdir -p "$state_dir"
+# The Builder's wrapper uses the default per-user installation (and the host flatpak binary).
+[[ -z "${FLATPAK_USER_DIR:-}" || "${FLATPAK_USER_DIR%/}" == "${XDG_DATA_HOME:-$HOME/.local/share}/flatpak" ]] \
+    || die "org.flatpak.Builder uses the default per-user installation; unset FLATPAK_USER_DIR"
+[[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] || die "no D-Bus session: run this under dbus-run-session"
+flatpak --user info org.flatpak.Builder >/dev/null 2>&1 || die "org.flatpak.Builder is not installed (flatpak --user install flathub org.flatpak.Builder)"
+builder=(flatpak run --user org.flatpak.Builder)
+in_builder() { local cmd="$1"; shift; flatpak run --user --command="$cmd" org.flatpak.Builder "$@"; }
 
+# Which Builder (and so which flatpak-builder and AppStream) made this build.
+python3 -I -c '
+import json, sys
+keys = ("ref", "commit", "version", "flatpak_builder", "appstreamcli")
+json.dump(dict(zip(keys, (v.strip() for v in sys.argv[1:]))), sys.stdout, indent=2, sort_keys=True)
+print()' \
+    "$(flatpak --user info --show-ref org.flatpak.Builder)" \
+    "$(flatpak --user info --show-commit org.flatpak.Builder)" \
+    "$(flatpak --user info org.flatpak.Builder | sed -n 's/^ *Version: //p')" \
+    "$(in_builder flatpak-builder --version)" \
+    "$(in_builder appstreamcli --version)" > "$out_dir/BUILDER.json"
+echo "builder:"; cat "$out_dir/BUILDER.json"
+
+# On failure: what the build tree held and what AppStream says about it (no secrets exist here).
+collect_diagnostics() {
+    local diag="$out_dir/diagnostics" files="$work/build/files"
+    mkdir -p "$diag"
+    cp "$out_dir/BUILDER.json" "$manifest" "$diag/"
+    [[ -d "$files" ]] || { echo "no build tree at $files" > "$diag/inventory.txt"; return 0; }
+    # type, mode, size, path and (for symlinks) target
+    (cd "$files" && find . -printf '%y %M %s %p\t%l\n' | LC_ALL=C sort -k4) > "$diag/inventory.txt" || true
+    local meta=() d
+    for d in share/metainfo share/appdata share/applications share/icons; do [[ -e "$files/$d" ]] && meta+=("$d"); done
+    ((${#meta[@]})) && { tar -C "$files" -cf "$diag/metadata.tar" "${meta[@]}" || true; }
+    # Same AppStream and arguments flatpak-builder uses, into a scratch result (the tree is left alone).
+    in_builder appstreamcli compose --print-report=full --prefix=/ --origin="$APP_ID" \
+        --result-root="$diag/appstream" --data-dir="$diag/appstream/xmls" --icons-dir="$diag/appstream/icons" \
+        --components="$APP_ID,$APP_ID.desktop" "$files" > "$diag/appstream-report.txt" 2>&1 || true
+    echo "build failed; diagnostics in $diag" >&2
+}
+
+mkdir -p "$state_dir"
 # --sandbox: the manifest cannot grant itself network or host access during the build.
+rc=0
 "${builder[@]}" --user --sandbox --force-clean --disable-rofiles-fuse \
     --arch="$arch" --default-branch="$BRANCH" \
     --state-dir="$state_dir" --repo="$out_dir/repo" \
     --subject="$APP_ID $version (${commit:-unversioned})" \
-    "$work/build" "$manifest"
+    "$work/build" "$manifest" || rc=$?
+if ((rc)); then
+    collect_diagnostics
+    exit "$rc"
+fi
 
 # The publisher regenerates appstream data for the whole repository; drop the build's own.
 while IFS= read -r ref; do

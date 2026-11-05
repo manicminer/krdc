@@ -98,7 +98,23 @@ jobs:
           [[ -n "$TAG" ]] && args+=(--tag "$TAG")
           key=packaging-src/packaging/flatpak/manicminer-flatpak.gpg
           [[ -s "$key" ]] && args+=(--bundle-gpg-key "$key")
-          packaging-src/packaging/flatpak/build.sh "${args[@]}"
+          # Private session bus: org.flatpak.Builder reaches the host flatpak through it.
+          dbus-run-session -- packaging-src/packaging/flatpak/build.sh "${args[@]}"
+      - name: Build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flatpak-build-diagnostics-x86_64
+          path: out/diagnostics
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Builder provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flatpak-builder-provenance-x86_64
+          path: out/BUILDER.json
+          retention-days: 30
+          if-no-files-found: error
       - name: Sign-in return path in the sandbox (offline)
         env:
           TAG: ${{ needs.validate.outputs.tag }}
